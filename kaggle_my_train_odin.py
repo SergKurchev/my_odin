@@ -157,7 +157,7 @@ train_cmd = [
     # Если хотим использовать веса ResNet (закомментировано)
     # "MODEL.WEIGHTS", "detectron2://ImageNetPretrained/torchvision/R-50.pkl", 
     # Если хотим использовать готовые веса (раскомментировано)
-    "MODEL.WEIGHTS", CONFIG["M2F_WEIGHTS_PATH"], 
+    "MODEL.WEIGHTS", CONFIG["ODIN_WEIGHTS_PATH"], 
     "OUTPUT_DIR", "./output"
 ]
 
