@@ -49,6 +49,15 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 # -------------------------------------------------------------------------
 # 1. Dataset Registration
 # -------------------------------------------------------------------------
+def quat_to_rotmat(w, x, y, z):
+    """Convert quaternion (w, x, y, z) to 3x3 rotation matrix."""
+    R = np.array([
+        [1 - 2*(y*y + z*z),   2*(x*y - z*w),     2*(x*z + y*w)],
+        [2*(x*y + z*w),       1 - 2*(x*x + z*z),  2*(y*z - x*w)],
+        [2*(x*z - y*w),       2*(y*z + x*w),      1 - 2*(x*x + y*y)],
+    ], dtype=np.float32)
+    return R
+
 CATEGORIES = {0: "Ripe", 1: "Unripe", 2: "Half-ripe"} # 3 is Peduncle but ignored
 NUM_CLASSES = len(CATEGORIES)
 
