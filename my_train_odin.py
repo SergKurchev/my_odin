@@ -491,7 +491,10 @@ class MyTrainer(DefaultTrainer):
         optimizer = self.build_optimizer(cfg, model)
         data_loader = self.build_train_loader(cfg)
 
-        model = DistributedDataParallel(model, device_ids=[comm.get_local_rank()] if comm.get_world_size() > 1 else None)
+        # Оборачиваем в DDP только при multi-GPU (world_size > 1)
+        # При одиночном запуске DDP требует init_process_group, которого нет
+        if comm.get_world_size() > 1:
+            model = DistributedDataParallel(model, device_ids=[comm.get_local_rank()])
         self._trainer = (AMPTrainer if cfg.SOLVER.AMP.ENABLED else SimpleTrainer)(model, data_loader, optimizer)
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
