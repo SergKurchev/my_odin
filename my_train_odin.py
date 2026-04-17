@@ -210,8 +210,8 @@ class StrawberryDatasetMapper:
         instances_all = []
         
         for idx in range(num_sample_frames):
-            # RGB
-            img = imread(file_names[idx])
+            # RGB (take only first 3 channels to drop Alpha if RGBA)
+            img = imread(file_names[idx])[..., :3]
             img_tensor = torch.as_tensor(np.ascontiguousarray(img.transpose(2, 0, 1)))
             images.append(img_tensor)
             
