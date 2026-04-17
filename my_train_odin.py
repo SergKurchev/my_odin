@@ -263,6 +263,8 @@ class StrawberryDatasetMapper:
         h, w = images[0].shape[1:]
         dataset_dict["new_image_shape"] = (h, w)
         dataset_dict["decoder_3d"] = self.cfg.MODEL.DECODER_3D
+        dataset_dict["do_camera_drop"] = getattr(self.cfg.INPUT, "CAMERA_DROP", False)
+        dataset_dict["max_frames"] = getattr(self.cfg.INPUT, "MAX_FRAME_NUM", -1)
         dataset_dict["images"] = images
         dataset_dict["padding_masks"] = torch.zeros((h, w), dtype=torch.bool)
         dataset_dict["depths"] = depths
@@ -290,7 +292,7 @@ class StrawberryDatasetMapper:
             multi_scale_xyz, _, original_xyz = backprojector_dataloader(
                 list(features.values()), depths_tensor, poses_tensor, intrinsics_tensor,
                 augment=False, method=self.cfg.MODEL.INTERPOLATION_METHOD, scannet_pc=None,
-                padding=(pad_h, pad_w), do_rot_scale=self.cfg.DO_ROT_SCALE
+                padding=(pad_h, pad_w), do_rot_scale=getattr(self.cfg, "DO_ROT_SCALE", False)
             )
             dataset_dict['multi_scale_xyz'] = multi_scale_xyz[::-1]
             dataset_dict['original_xyz'] = original_xyz[0]
@@ -298,6 +300,7 @@ class StrawberryDatasetMapper:
         dataset_dict["all_classes"] = copy.copy(CATEGORIES)
         dataset_dict["num_classes"] = self.num_classes
         dataset_dict["dataset_name"] = "strawberry_train" if self.is_train else "strawberry_val"
+
         
         return dataset_dict
 
