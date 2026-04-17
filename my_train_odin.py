@@ -259,12 +259,12 @@ class StrawberryDatasetMapper:
                 
             instances_all.append(instances)
         
-        # Prepare ODIN specific dictionary structure
         h, w = images[0].shape[1:]
         dataset_dict["new_image_shape"] = (h, w)
         dataset_dict["decoder_3d"] = self.cfg.MODEL.DECODER_3D
         dataset_dict["do_camera_drop"] = getattr(self.cfg.INPUT, "CAMERA_DROP", False)
         dataset_dict["max_frames"] = getattr(self.cfg.INPUT, "MAX_FRAME_NUM", -1)
+        dataset_dict["use_ghost"] = getattr(self.cfg, "USE_GHOST_POINTS", False)
         dataset_dict["images"] = images
         dataset_dict["padding_masks"] = torch.zeros((h, w), dtype=torch.bool)
         dataset_dict["depths"] = depths
