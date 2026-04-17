@@ -140,9 +140,15 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     
             if len(file_names) > 0:
                 part_id = start_idx // CHUNK_SIZE
+                # Получаем размеры из интринзики первого кадра (cx, cy — центр изображения)
+                first_intr = chunk_cams[0]["intrinsics"]
+                img_w = int(round(first_intr["cx"] * 2))
+                img_h = int(round(first_intr["cy"] * 2))
                 record = {
                     "file_name": file_names[0], # Primary file (первый кадр в чанке)
                     "image_id": f"{sid}_part{part_id}",
+                    "width": img_w,   # обязательно для detectron2
+                    "height": img_h,  # обязательно для detectron2
                     "file_names": file_names,
                     "depth_file_names": depth_file_names,
                     "masks_file_names": masks_file_names,
