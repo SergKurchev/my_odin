@@ -12,6 +12,7 @@ from pytorch3d.ops import knn_points
 
 
 from detectron2.config import configurable
+from detectron2.utils.events import get_event_storage
 from detectron2.data import MetadataCatalog
 from detectron2.modeling import META_ARCH_REGISTRY, build_backbone, build_sem_seg_head
 from detectron2.modeling.backbone import Backbone
@@ -841,7 +842,7 @@ class ODIN(nn.Module):
                 if not decoder_3d:
                     processed_results[-1]["instances"] = instance_r["2d"]
 
-            if self.cfg.VISUALIZE_3D and decoder_3d:
+            if self.cfg.VISUALIZE_3D and decoder_3d and i < 3:
                 self.visualize_pred_on_ours(
                     i, images, [bs, v, H_padded, W_padded],
                     input_per_image, processed_results[-1], 
@@ -1142,12 +1143,21 @@ class ODIN(nn.Module):
         valids[valid_idx] = True
 
         dataset_name = input_per_image['dataset_name']
+        
+        # Организуем папки по итерациям
+        try:
+            storage = get_event_storage()
+            it = storage.iter
+        except:
+            it = 0
+            
+        iter_dir = os.path.join(self.cfg.VISUALIZE_LOG_DIR, f"iter_{it:06d}")
 
         vis_utils.plot_3d_strawberry(
             our_pc, color, masks=pred_masks,
             labels=pred_labels,
             gt_masks=gt_masks, gt_labels=gt_labels, scene_name=scene_name,
-            data_dir=self.cfg.VISUALIZE_LOG_DIR,
+            data_dir=iter_dir,
             num_frames=v, image_size=(H_padded, W_padded)
         )     
 
