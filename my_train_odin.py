@@ -552,7 +552,8 @@ class MyTrainer(DefaultTrainer):
         self.register_hooks(self.build_hooks())
         
     def build_hooks(self):
-        hooks = super().build_hooks()
+        from detectron2.engine import hooks
+        all_hooks = super().build_hooks()
         
         # Хук для отображения номера эпохи в логах
         class EpochHook(hooks.HookBase):
@@ -562,12 +563,11 @@ class MyTrainer(DefaultTrainer):
 
             def before_step(self):
                 storage = get_event_storage()
-                # Эпоха = (текущая итерация * батч) / размер датасета
-                epoch = (storage.iter * self.batch_size) / self.dataset_len
+                epoch = self.trainer.iter * self.batch_size / self.dataset_len
                 storage.put_scalar("epoch", epoch, smoothing_hint=False)
 
         dataset_len = len(DatasetCatalog.get(self.cfg.DATASETS.TRAIN[0]))
-        hooks.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
+        all_hooks.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
         
         # Добавляем BestCheckpointer для сохранения лучшей модели по AP50
         from detectron2.engine.hooks import BestCheckpointer
