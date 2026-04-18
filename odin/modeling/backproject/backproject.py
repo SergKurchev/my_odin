@@ -126,6 +126,15 @@ def unproject(intrinsics, poses, depths):
     ], -1)
 
     world_coords = (poses @ cam_coords.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
+    
+    # Диагностика в Kaggle
+    if not hasattr(backproject_depth, "_diag_logged"):
+        print(f">>> ODIN Debug: Poses mean: {poses.mean().item():.4f}")
+        print(f">>> ODIN Debug: Poses shape: {poses.shape}")
+        print(f">>> ODIN Debug: World XYZ range: min={world_coords[..., :3].min().item():.2f}, max={world_coords[..., :3].max().item():.2f}")
+        backproject_depth._logged = True
+        backproject_depth._diag_logged = True
+
     world_coords = world_coords[..., :3] / world_coords[..., 3][..., None]
 
     world_coords = world_coords.reshape(B, V, H, W, 3)
