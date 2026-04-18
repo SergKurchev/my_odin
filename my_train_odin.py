@@ -41,7 +41,7 @@ from odin import (
     build_detection_train_loader,
     build_detection_test_loader,
 )
-from odin.modeling.backproject.backproject import backprojector_dataloader
+from odin.modeling.backproject.backproject import backprojector_dataloader, multiscsale_voxelize
 import pandas as pd
 
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -290,11 +290,17 @@ class StrawberryDatasetMapper:
             poses_tensor = torch.stack(poses)
             intrinsics_tensor = torch.stack(intrinsics)
             
-            multi_scale_xyz, multi_scale_p2v, original_xyz = backprojector_dataloader(
+            multi_scale_xyz, _, original_xyz = backprojector_dataloader(
                 list(features.values()), depths_tensor, poses_tensor, intrinsics_tensor,
                 augment=False, method=self.cfg.MODEL.INTERPOLATION_METHOD, scannet_pc=None,
                 padding=(pad_h, pad_w), do_rot_scale=getattr(self.cfg, "DO_ROT_SCALE", False)
             )
+            
+            if getattr(self.cfg.INPUT, "VOXELIZE", False):
+                multi_scale_p2v = multiscsale_voxelize(multi_scale_xyz, self.cfg.INPUT.VOXEL_SIZE)
+            else:
+                multi_scale_p2v = [None] * len(multi_scale_xyz)
+
             dataset_dict['multi_scale_xyz'] = multi_scale_xyz[::-1]
             dataset_dict['multi_scale_p2v'] = multi_scale_p2v[::-1]
             dataset_dict['original_xyz'] = original_xyz[0]
