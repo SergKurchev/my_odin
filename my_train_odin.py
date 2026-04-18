@@ -571,7 +571,7 @@ class MyTrainer(DefaultTrainer):
         
         # Добавляем BestCheckpointer для сохранения лучшей модели по AP50
         from detectron2.engine.hooks import BestCheckpointer
-        hooks.append(
+        all_hooks.append(
             BestCheckpointer(
                 self.cfg.TEST.EVAL_PERIOD,
                 self.checkpointer,
@@ -580,7 +580,7 @@ class MyTrainer(DefaultTrainer):
                 file_prefix="model_best",
             )
         )
-        return hooks
+        return all_hooks
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
