@@ -135,9 +135,17 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     
                     R = quat_to_rotmat(*cam["rotation"])
                     t = np.array(cam["position"], dtype=np.float32)
+                    
+                    # Конвертация Unity (LH) -> CV (RH)
+                    # В Unity Y - вверх, Z - вперед. В CV Y - вниз.
+                    # Отражаем Y в трансляции и инвертируем строки вращения
                     pose = np.eye(4, dtype=np.float32)
                     pose[:3, :3] = R
-                    pose[:3, 3] = t
+                    pose[1, :3] *= -1 # Отражаем Y строку вращения
+                    pose[1, 3] = -t[1] # Отражаем Y позицию
+                    pose[:3, 3] = t    # Сначала ставим оригинал
+                    pose[1, 3] = -t[1] # Потом фиксим Y
+                    
                     poses.append(pose)
                     
             if len(file_names) > 0:
@@ -227,6 +235,13 @@ class StrawberryDatasetMapper:
             depth = np.load(depth_file_names[idx])
             depth = depth[::-1, :].copy() 
             depth = cv2.resize(depth, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
+            
+            # Фильтр "мусора" (белые стены и черный пол)
+            rr, gg, bb = img[:,:,0], img[:,:,1], img[:,:,2]
+            is_white = (rr > 220) & (gg > 220) & (bb > 220)
+            is_black = (rr < 20) & (gg < 20) & (bb < 20)
+            depth[is_white | is_black] = 0
+            
             depths.append(torch.as_tensor(depth))
             
             # Intrinsics Scaling
@@ -307,7 +322,9 @@ class StrawberryDatasetMapper:
             poses_tensor = torch.stack(poses)
             intrinsics_tensor = torch.stack(intrinsics)
             
-            multi_scale_xyz, _, original_xyz = backprojector_dataloader(
+            # Подготовка original_xyz для всех кадров
+            # Обрати внимание: ODIN ожидает [V, H, W, 3]
+            multi_scale_xyz, _, original_xyz_list = backprojector_dataloader(
                 list(features.values()), depths_tensor, poses_tensor, intrinsics_tensor,
                 augment=False, method=self.cfg.MODEL.INTERPOLATION_METHOD, scannet_pc=None,
                 padding=(pad_h, pad_w), do_rot_scale=getattr(self.cfg, "DO_ROT_SCALE", False)
@@ -320,7 +337,8 @@ class StrawberryDatasetMapper:
 
             dataset_dict['multi_scale_xyz'] = multi_scale_xyz[::-1]
             dataset_dict['multi_scale_p2v'] = multi_scale_p2v[::-1]
-            dataset_dict['original_xyz'] = original_xyz[0]
+            # original_xyz_list[0] имеет форму [V, H_padded, W_padded, 3]
+            dataset_dict['original_xyz'] = original_xyz_list[0]
 
         dataset_dict["all_classes"] = copy.copy(CATEGORIES)
         dataset_dict["num_classes"] = self.num_classes

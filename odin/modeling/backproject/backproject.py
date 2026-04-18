@@ -116,7 +116,7 @@ def unproject(intrinsics, poses, depths):
     y = y[None, None].repeat(B, V, 1, 1).flatten(2)
     z = depths.flatten(2)
     x = (x - px) * z / fx
-    y = -(y - py) * z / fy # Unity fix: Y is UP, so we negate to match projection
+    y = (y - py) * z / fy
     cam_coords = torch.stack([
         x, y, z, torch.ones_like(x)
     ], -1)
