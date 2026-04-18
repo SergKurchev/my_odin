@@ -361,7 +361,7 @@ def interpolate_feats_3d(
         output = output.permute(0, 2, 1)
         if not return_voxelized and len(source_feats.shape) == 4:
             output = output.reshape(
-                output.shape[0], output.shape[1], target_xyz.shape[2], target_xyz.shape[3])
+                -1, output.shape[1], target_xyz.shape[2], target_xyz.shape[3])
        
     return output
 
