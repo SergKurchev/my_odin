@@ -136,15 +136,10 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     R = quat_to_rotmat(*cam["rotation"])
                     t = np.array(cam["position"], dtype=np.float32)
                     
-                    # Конвертация Unity (LH) -> CV (RH)
-                    # В Unity Y - вверх, Z - вперед. В CV Y - вниз.
-                    # Отражаем Y в трансляции и инвертируем строки вращения
+                    # Стандартная матрица [R | t]
                     pose = np.eye(4, dtype=np.float32)
                     pose[:3, :3] = R
-                    pose[1, :3] *= -1 # Отражаем Y строку вращения
-                    pose[1, 3] = -t[1] # Отражаем Y позицию
-                    pose[:3, 3] = t    # Сначала ставим оригинал
-                    pose[1, 3] = -t[1] # Потом фиксим Y
+                    pose[:3, 3] = t
                     
                     poses.append(pose)
                     
@@ -557,7 +552,7 @@ class MyTrainer(DefaultTrainer):
         self.register_hooks(self.build_hooks())
         
     def build_hooks(self):
-        ret = super().build_hooks()
+        hooks = super().build_hooks()
         
         # Хук для отображения номера эпохи в логах
         class EpochHook(hooks.HookBase):
@@ -572,8 +567,20 @@ class MyTrainer(DefaultTrainer):
                 storage.put_scalar("epoch", epoch, smoothing_hint=False)
 
         dataset_len = len(DatasetCatalog.get(self.cfg.DATASETS.TRAIN[0]))
-        ret.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
-        return ret
+        hooks.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
+        
+        # Добавляем BestCheckpointer для сохранения лучшей модели по AP50
+        from detectron2.engine.hooks import BestCheckpointer
+        hooks.append(
+            BestCheckpointer(
+                self.cfg.TEST.EVAL_PERIOD,
+                self.checkpointer,
+                "strawberry_3d/mAP@50",
+                "max",
+                file_prefix="model_best",
+            )
+        )
+        return hooks
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -628,14 +635,28 @@ def setup(args):
     
     # Расчет макс. итераций на основе эпох, если задано
     dataset_len = len(DatasetCatalog.get(cfg.DATASETS.TRAIN[0]))
+    steps_per_epoch = dataset_len // args.batch_size
     if args.num_epochs > 0:
-        cfg.SOLVER.MAX_ITER = int(args.num_epochs * (dataset_len / args.batch_size))
+        cfg.SOLVER.MAX_ITER = int(args.num_epochs * steps_per_epoch)
         print(f"Calculated MAX_ITER: {cfg.SOLVER.MAX_ITER} for {args.num_epochs} epochs")
     else:
         cfg.SOLVER.MAX_ITER = args.max_iter
 
+    # Настройка периодов (Eval и Checkpoint)
+    if args.eval_period == 0:
+        eval_period = steps_per_epoch * 2 # Каждые 2 эпохи по умолчанию
+    else:
+        eval_period = args.eval_period
+        
+    if args.checkpoint_period == 0:
+        checkpoint_period = steps_per_epoch # Каждую эпоху по умолчанию
+    else:
+        checkpoint_period = args.checkpoint_period
+        
+    cfg.SOLVER.CHECKPOINT_PERIOD = checkpoint_period
+    cfg.TEST.EVAL_PERIOD = eval_period
+
     cfg.SOLVER.BASE_LR = args.lr
-    cfg.TEST.EVAL_PERIOD = args.eval_period
     cfg.DATALOADER.NUM_WORKERS = 4 
     
     cfg.INPUT.SAMPLING_FRAME_NUM = args.num_frames
@@ -677,7 +698,8 @@ if __name__ == "__main__":
     # Параметры для управления из ноутбука
     parser.add_argument("--num_epochs", type=float, default=-1, help="Total epochs (overrides max_iter)")
     parser.add_argument("--max_iter", type=int, default=3000, help="Total iterations")
-    parser.add_argument("--eval_period", type=int, default=200, help="Run evaluation every N iterations")
+    parser.add_argument("--eval_period", type=int, default=0, help="Eval every N iterations (0 = auto every 2 epochs)")
+    parser.add_argument("--checkpoint_period", type=int, default=0, help="Save checkpoint every N iterations (0 = every epoch)")
     parser.add_argument("--batch_size", type=int, default=1, help="Images per batch")
     parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
