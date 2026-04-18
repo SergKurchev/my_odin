@@ -1082,10 +1082,12 @@ class ODIN(nn.Module):
             our_pc = our_pc[0][valids]
         else:
             if self.cfg.HIGH_RES_INPUT:
+                our_pc = our_pc.float().permute(0, 3, 1, 2)
                 our_pc = F.interpolate(
-                    our_pc.float().permute(0, 3, 1, 2), scale_factor=0.5, mode="nearest"
-                ).permute(0, 2, 3, 1).reshape(-1, 3)
-                our_pc = our_pc.cpu().numpy()
+                    our_pc, scale_factor=0.5, mode="nearest"
+                ).permute(0, 2, 3, 1)
+                
+            our_pc = our_pc.reshape(-1, 3).cpu().numpy()
 
         vis_images = images.tensor * self.pixel_std + self.pixel_mean
         vis_images = vis_images.view(bs, v, 3, H_padded, W_padded)[index]
