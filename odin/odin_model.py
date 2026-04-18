@@ -1143,12 +1143,12 @@ class ODIN(nn.Module):
 
         dataset_name = input_per_image['dataset_name']
 
-        vis_utils.plot_3d_offline(
-            our_pc, color, masks=pred_masks, valids=valids,
+        vis_utils.plot_3d_strawberry(
+            our_pc, color, masks=pred_masks,
             labels=pred_labels,
             gt_masks=gt_masks, gt_labels=gt_labels, scene_name=scene_name,
-            data_dir=self.cfg.VISUALIZE_LOG_DIR, 
-            mask_classes=self.cfg.SKIP_CLASSES, dataset_name=dataset_name,
+            data_dir=self.cfg.VISUALIZE_LOG_DIR,
+            num_frames=v, image_size=(H_padded, W_padded)
         )     
 
     def prepare_targets(

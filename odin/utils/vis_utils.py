@@ -190,6 +190,138 @@ def get_color_pc_from_mask(_mask, label, pcd, instance=False,
     return masks_pcs, masks_colors
 
 
+def plot_3d_strawberry(
+    pc, pc_color, masks, labels, 
+    gt_masks=None, gt_labels=None, 
+    scene_name=None, data_dir=None,
+    num_frames=1, image_size=(256, 256)):
+    """
+    Generates a standalone HTML viewer (Three.js) similar to generate_sample_viewer.py
+    """
+    import json
+    
+    # 1. Prepare Ground Truth (if exists)
+    insts_gt = np.full(pc.shape[0], -1, dtype=np.int32)
+    cats_gt = np.full(pc.shape[0], -1, dtype=np.int32)
+    if gt_masks is not None:
+        for m_idx in range(len(gt_masks)):
+            mask = gt_masks[m_idx]
+            insts_gt[mask > 0.5] = m_idx
+            cats_gt[mask > 0.5] = gt_labels[m_idx]
+
+    # 2. Prepare Predictions
+    insts_pred = np.full(pc.shape[0], -1, dtype=np.int32)
+    cats_pred = np.full(pc.shape[0], -1, dtype=np.int32)
+    if masks is not None:
+        for m_idx in range(len(masks)):
+            mask = masks[m_idx]
+            insts_pred[mask > 0.5] = m_idx
+            cats_pred[mask > 0.5] = labels[m_idx]
+
+    # 3. Downsample for web performance (max 500k points)
+    max_pts = 500000
+    if len(pc) > max_pts:
+        idx = np.random.choice(len(pc), max_pts, replace=False)
+        pc, pc_color = pc[idx], pc_color[idx]
+        insts_gt, cats_gt = insts_gt[idx], cats_gt[idx]
+        insts_pred, cats_pred = insts_pred[idx], cats_pred[idx]
+
+    # 4. Serialize to JS-friendly strings
+    def to_js_float(arr): return "new Float32Array([" + ",".join(f"{v:.4f}" for v in arr.flatten()) + "])"
+    def to_js_uint8(arr): return "new Uint8Array([" + ",".join(str(int(v)) for v in arr.flatten()) + "])"
+    def to_js_int32(arr): return "new Int32Array([" + ",".join(str(int(v)) for v in arr.flatten()) + "])"
+
+    js_data = {
+        "xs": to_js_float(pc[:, 0]),
+        "ys": to_js_float(pc[:, 1]),
+        "zs": to_js_float(pc[:, 2]),
+        "rs": to_js_uint8(pc_color[:, 0] * 255),
+        "gs": to_js_uint8(pc_color[:, 1] * 255),
+        "bs": to_js_uint8(pc_color[:, 2] * 255),
+        "insts": to_js_int32(insts_gt),
+        "cats": to_js_int32(cats_gt),
+        "insts_pred": to_js_int32(insts_pred),
+        "cats_pred": to_js_int32(cats_pred),
+    }
+
+    # Simplified HTML Template (from generate_sample_viewer.py)
+    html_template = f"""<!DOCTYPE html>
+    <html><head><meta charset="utf-8">
+    <title>Strawberry ODIN - {scene_name}</title>
+    <style>
+        body {{ margin: 0; background: #0d1117; color: #fff; font-family: sans-serif; overflow: hidden; }}
+        #ui {{ position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 5px; }}
+        .btn {{ padding: 6px 12px; background: #21262d; border: 1px solid #30363d; color: #ccc; cursor: pointer; border-radius: 4px; font-size: 12px; }}
+        .btn.active {{ background: #1f6feb; border-color: #388bfd; color: #fff; }}
+        #legend {{ position: absolute; bottom: 10px; left: 10px; font-size: 12px; background: rgba(0,0,0,0.5); padding: 5px; }}
+    </style>
+    </head>
+    <body>
+    <div id="ui">
+        <button class="btn active" onclick="setMode('rgb', this)">RGB</button>
+        <span style="padding: 5px">GT:</span>
+        <button class="btn" onclick="setMode('seg', this)">GT Cat</button>
+        <button class="btn" onclick="setMode('inst', this)">GT Inst</button>
+        <span style="padding: 5px">Pred:</span>
+        <button class="btn" onclick="setMode('seg_pred', this)">Pred Cat</button>
+        <button class="btn" onclick="setMode('inst_pred', this)">Pred Inst</button>
+    </div>
+    <div id="legend">Ripe: Red | Unripe: Green | Half: Orange</div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        const XS={js_data['xs']}, YS={js_data['ys']}, ZS={js_data['zs']};
+        const RS={js_data['rs']}, GS={js_data['gs']}, BS={js_data['bs']};
+        const INSTS={js_data['insts']}, CATS={js_data['cats']};
+        const INSTS_P={js_data['insts_pred']}, CATS_P={js_data['cats_pred']};
+        const N = XS.length;
+        const PALETTE = {{ '0': [232,68,68], '1': [72,199,72], '2': [240,160,40], '-1': [80,80,80] }};
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
+        const renderer = new THREE.WebGLRenderer(); renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        camera.position.set(0, 1, 2);
+
+        const geo = new THREE.BufferGeometry();
+        const pos = new Float32Array(N * 3);
+        const col = new Float32Array(N * 3);
+        for(let i=0; i<N; i++) {{ pos[i*3]=XS[i]; pos[i*3+1]=YS[i]; pos[i*3+2]=ZS[i]; }}
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+        function setMode(mode, btn) {{
+            document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+            if(btn) btn.classList.add('active');
+            for(let i=0; i<N; i++) {{
+                let r,g,b;
+                if(mode==='rgb') {{ r=RS[i]/255; g=GS[i]/255; b=BS[i]/255; }}
+                else if(mode==='seg' || mode==='seg_pred') {{
+                    const c = (mode==='seg') ? CATS[i] : CATS_P[i];
+                    const rgb = PALETTE[c] || PALETTE['-1'];
+                    r=rgb[0]/255; g=rgb[1]/255; b=rgb[2]/255;
+                }} else {{
+                    const inst = (mode==='inst') ? INSTS[i] : INSTS_P[i];
+                    if(inst===-1) {{ r=0.3; g=0.3; b=0.3; }}
+                    else {{ const h=(inst*2654435761)>>>0; r=((h>>>16)&255)/255; g=((h>>>8)&255)/255; b=(h&255)/255; }}
+                }}
+                col[i*3]=r; col[i*3+1]=g; col[i*3+2]=b;
+            }}
+            geo.attributes.color.needsUpdate = true;
+        }}
+        setMode('rgb');
+        scene.add(new THREE.Points(geo, new THREE.PointsMaterial({{ size:0.005, vertexColors:true }})));
+        animate();
+        function animate() {{ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }}
+    </script></body></html>"""
+
+    if not os.path.exists(data_dir): os.makedirs(data_dir)
+    with open(os.path.join(data_dir, f"{scene_name}.html"), "w", encoding="utf-8") as f:
+        f.write(html_template)
+    print(f"Generated standalone visualization: {scene_name}.html")
+
+
 def plot_3d_offline(
     pc, pc_color, masks, labels, valids=None,
     gt_masks=None, gt_labels=None, scene_name=None,
@@ -286,13 +418,5 @@ def plot_3d_offline(
 
 
 if __name__ == "__main__":
-    feature_folders = [
-        # "/projects/katefgroup/language_grounding/feature_vis/2d",
-        # "/projects/katefgroup/language_grounding/feature_vis/no_tri_no_vox"
-        
-        # '/projects/katefgroup/language_grounding/feature_vis/2d_single_view',
-        '/projects/katefgroup/language_grounding/feature_vis/3d_single_view_float64',
-        '/projects/katefgroup/language_grounding/feature_vis/3d_single_view_float64_rerun',
-        # 3d_single_view_float64_rerun
-    ]
-    visualize_pca_from_feature_folders(feature_folders)
+    # Old PCA code
+    pass
