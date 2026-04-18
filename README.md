@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **Stable Commit for Strawberry Project:** `f84cab4`
+> This version contains the fixed Unity coordinate alignment, working 3D visualizations, and optimized checkpointing.
+
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/odin-a-single-model-for-2d-and-3d-perception/3d-instance-segmentation-on-scannet200)](https://paperswithcode.com/sota/3d-instance-segmentation-on-scannet200?p=odin-a-single-model-for-2d-and-3d-perception)
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/odin-a-single-model-for-2d-and-3d-perception/3d-semantic-segmentation-on-scannet200)](https://paperswithcode.com/sota/3d-semantic-segmentation-on-scannet200?p=odin-a-single-model-for-2d-and-3d-perception)
 
