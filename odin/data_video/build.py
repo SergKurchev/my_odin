@@ -241,7 +241,7 @@ def collate_fn(batch):
                     num_keys = sum([len(sample[key][i]) for i in range(len(sample[key]))])
                     num_batch_instances += num_keys
 
-            if key in special_keys:
+            if key in special_keys and sample[key][0] is not None:
                 assert len(sample[key][0]) == max_frames
                 sample[key] = [sample[key][j][torch.from_numpy(keep)] for j in range(len(sample[key]))]
 
