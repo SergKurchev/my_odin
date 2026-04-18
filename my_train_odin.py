@@ -570,6 +570,12 @@ class MyTrainer(DefaultTrainer):
                 storage = get_event_storage()
                 epoch = self.trainer.iter * self.batch_size / self.dataset_len
                 storage.put_scalar("epoch", epoch, smoothing_hint=False)
+                
+                # Периодически выводим в консоль (раз в 20 шагов, как и D2)
+                if (self.trainer.iter + 1) % 20 == 0:
+                    import logging
+                    logger = logging.getLogger("odin_strawberry")
+                    logger.info(f">>> EPOCH: {epoch:.2f} | ITER: {self.trainer.iter + 1} <<<")
 
         dataset_len = len(DatasetCatalog.get(self.cfg.DATASETS.TRAIN[0]))
         all_hooks.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
