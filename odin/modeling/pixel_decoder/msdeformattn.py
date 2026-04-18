@@ -20,8 +20,7 @@ from odin.modeling.meta_arch.cross_view_attention import CrossViewPAnet
 from odin.modeling.backproject.backproject import interpolate_feats_3d
 
 
-import ipdb
-st = ipdb.set_trace
+
 
 
 def build_pixel_decoder(cfg, input_shape):
@@ -463,9 +462,7 @@ class MSDeformAttnPixelDecoder(nn.Module):
             bs = y.shape[0]
             
         
-        # check for nans in y
-        if torch.isnan(y).any():
-            st()
+
 
         # Split again into multi-scale features (list)
         split_size_or_sections = [None] * self.transformer_num_feature_levels
