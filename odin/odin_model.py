@@ -274,13 +274,17 @@ class ODIN(nn.Module):
                 torch.stack([batched_inputs[i]["multi_scale_xyz"][j] for i in range(bs)], dim=0).to(self.device) for j in range(len(batched_inputs[0]["multi_scale_xyz"]))
             ]
 
-            voxel_size = self.cfg.INPUT.VOXEL_SIZE[::-1]
-
-            if self.cfg.INPUT.VOXELIZE:
-                multiview_data["multi_scale_p2v"] = multiscsale_voxelize(
-                    multiview_data["multi_scale_xyz"], voxel_size
-                )
-        return depths, poses, valids, segments, intrinsics, multiview_data
+            if "multi_scale_p2v" in batched_inputs[0]:
+                multiview_data["multi_scale_p2v"] = [
+                    [batched_inputs[i]["multi_scale_p2v"][j] for i in range(bs)] for j in range(len(batched_inputs[0]["multi_scale_p2v"]))
+                ]
+            else:
+                voxel_size = self.cfg.INPUT.VOXEL_SIZE[::-1]
+                if self.cfg.INPUT.VOXELIZE:
+                    multiview_data["multi_scale_p2v"] = multiscsale_voxelize(
+                        multiview_data["multi_scale_xyz"], voxel_size
+                    )
+            return depths, poses, valids, segments, intrinsics, multiview_data
 
     def load_scannet_data(self, batched_inputs, multiview_data, scannet_pc_list=None, do_knn=False, images=None, shape=None):
         scennet_pc_processed = []

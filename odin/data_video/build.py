@@ -221,7 +221,7 @@ def collate_fn(batch):
     do_view_aug, max_frames = batch[0]['do_camera_drop'], batch[0]['max_frames']
     use_ghost = batch[0]['use_ghost']
 
-    special_keys = ['multi_scale_xyz']
+    special_keys = ['multi_scale_xyz', 'multi_scale_p2v']
 
     if not do_view_aug or np.random.random() < 0.5:
         return batch
