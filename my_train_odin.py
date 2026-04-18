@@ -626,6 +626,13 @@ def setup(args):
     cfg.INPUT.MIN_SIZE_TEST = args.image_size
     cfg.INPUT.MAX_SIZE_TEST = args.image_size
     
+    # Визуализация
+    if args.visualize:
+        cfg.VISUALIZE = True
+        cfg.VISUALIZE_3D = True
+        cfg.VISUALIZE_LOG_DIR = os.path.join(cfg.OUTPUT_DIR, "inference", "visualizations")
+        os.makedirs(cfg.VISUALIZE_LOG_DIR, exist_ok=True)
+    
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="odin_strawberry")
@@ -656,6 +663,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
+    parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
     
     args = parser.parse_args()
     
