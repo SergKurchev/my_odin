@@ -539,12 +539,21 @@ class MyTrainer(DefaultTrainer):
         
     def build_hooks(self):
         ret = super().build_hooks()
-        # Add custom hook for visualization dump on epoch
-        class VizHook(hooks.HookBase):
-            def after_step(self):
-                # Save visualization logic periodically here
-                pass
-        ret.append(VizHook())
+        
+        # Хук для отображения номера эпохи в логах
+        class EpochHook(hooks.HookBase):
+            def __init__(self, dataset_len, batch_size):
+                self.dataset_len = dataset_len
+                self.batch_size = batch_size
+
+            def before_step(self):
+                storage = get_event_storage()
+                # Эпоха = (текущая итерация * батч) / размер датасета
+                epoch = (storage.iter * self.batch_size) / self.dataset_len
+                storage.put_scalar("epoch", epoch, smoothing_hint=False)
+
+        dataset_len = len(DatasetCatalog.get(self.cfg.DATASETS.TRAIN[0]))
+        ret.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
         return ret
 
     @classmethod
@@ -595,9 +604,14 @@ def setup(args):
     cfg.DATASETS.TEST = ("strawberry_val",)
     cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = NUM_CLASSES
     
-    # Конфигурация размера батча и кол-ва кадров (требование: 1 GPU, Batch=1, Frames=5)
-    cfg.SOLVER.IMS_PER_BATCH = 1
-    cfg.INPUT.SAMPLING_FRAME_NUM = 5
+    # Конфигурация размера батча и кол-ва кадров
+    cfg.SOLVER.IMS_PER_BATCH = args.batch_size
+    cfg.SOLVER.MAX_ITER = args.max_iter
+    cfg.SOLVER.BASE_LR = args.lr
+    cfg.TEST.EVAL_PERIOD = args.eval_period
+    cfg.DATALOADER.NUM_WORKERS = 4 # Ускоряем загрузку данных
+    
+    cfg.INPUT.SAMPLING_FRAME_NUM = args.num_frames
     
     cfg.freeze()
     default_setup(cfg, args)
@@ -620,6 +634,14 @@ if __name__ == "__main__":
     parser = default_argument_parser()
     parser.add_argument("--dataset_dir", type=str, required=True, help="Path to multiview_dataset")
     parser.add_argument("--splits_file", type=str, required=True, help="Path to splits.json")
+    
+    # Параметры для управления из ноутбука
+    parser.add_argument("--max_iter", type=int, default=3000, help="Total iterations")
+    parser.add_argument("--eval_period", type=int, default=200, help="Run evaluation every N iterations")
+    parser.add_argument("--batch_size", type=int, default=1, help="Images per batch")
+    parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
+    parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
+    
     args = parser.parse_args()
     
     os.environ['TORCH_CUDNN_V8_API_DISABLED'] = '1'
