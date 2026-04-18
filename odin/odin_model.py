@@ -1137,11 +1137,8 @@ class ODIN(nn.Module):
             gt_masks = gt_masks.cpu().numpy()
         gt_labels = targets[index]['labels'].cpu().numpy()
 
-        valids = np.zeros_like(our_pc[:, 0]).astype(bool)
-
-        valid_idx = np.random.choice(
-            np.arange(valids.shape[0]), 200000)
-        valids[valid_idx] = True
+        # Окончательная диагностика перед отрисовкой
+        print(f">>> ODIN Final Vis: pc_shape={our_pc.shape}, range=[{our_pc.min().item():.2f}, {our_pc.max().item():.2f}], mean={our_pc.mean().item():.4f}")
 
         dataset_name = input_per_image['dataset_name']
         
@@ -1152,13 +1149,14 @@ class ODIN(nn.Module):
         except:
             it = 0
             
-        iter_dir = os.path.join(self.cfg.VISUALIZE_LOG_DIR, f"iter_{it:06d}")
+        vis_output_dir = os.path.join(self.cfg.VISUALIZE_LOG_DIR, f"iter_{it:06d}")
+        os.makedirs(vis_output_dir, exist_ok=True)
 
         vis_utils.plot_3d_strawberry(
             our_pc, color, masks=pred_masks,
             labels=pred_labels,
             gt_masks=gt_masks, gt_labels=gt_labels, scene_name=scene_name,
-            data_dir=iter_dir,
+            data_dir=vis_output_dir,
             num_frames=v, image_size=(H_padded, W_padded)
         )     
 

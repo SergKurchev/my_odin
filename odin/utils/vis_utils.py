@@ -196,11 +196,20 @@ def plot_3d_strawberry(
     scene_name=None, data_dir=None,
     num_frames=1, image_size=(256, 256)):
     """
-    Generates a standalone HTML viewer (Three.js) similar to generate_sample_viewer.py
+    Generates a standalone HTML viewer (Three.js) - Memory Optimized Version
     """
     import json
-    
-    # 1. Prepare Ground Truth (if exists)
+    import os
+
+    # 1. Downsample for web performance and memory safety
+    max_pts = 300000
+    if len(pc) > max_pts:
+        idx = np.random.choice(len(pc), max_pts, replace=False)
+        pc, pc_color = pc[idx], pc_color[idx]
+        if gt_masks is not None: gt_masks = gt_masks[:, idx]
+        if masks is not None: masks = masks[:, idx]
+
+    # 2. Prepare Labels (Instances and Categories)
     insts_gt = np.full(pc.shape[0], -1, dtype=np.int32)
     cats_gt = np.full(pc.shape[0], -1, dtype=np.int32)
     if gt_masks is not None:
@@ -209,7 +218,6 @@ def plot_3d_strawberry(
             insts_gt[mask > 0.5] = m_idx
             cats_gt[mask > 0.5] = gt_labels[m_idx]
 
-    # 2. Prepare Predictions
     insts_pred = np.full(pc.shape[0], -1, dtype=np.int32)
     cats_pred = np.full(pc.shape[0], -1, dtype=np.int32)
     if masks is not None:
@@ -218,103 +226,69 @@ def plot_3d_strawberry(
             insts_pred[mask > 0.5] = m_idx
             cats_pred[mask > 0.5] = labels[m_idx]
 
-    # 3. Downsample for web performance (max 500k points)
-    max_pts = 500000
-    if len(pc) > max_pts:
-        idx = np.random.choice(len(pc), max_pts, replace=False)
-        pc, pc_color = pc[idx], pc_color[idx]
-        insts_gt, cats_gt = insts_gt[idx], cats_gt[idx]
-        insts_pred, cats_pred = insts_pred[idx], cats_pred[idx]
-
-    # 4. Serialize to JS-friendly strings
-    def to_js_float(arr): return "new Float32Array([" + ",".join(f"{v:.4f}" for v in arr.flatten()) + "])"
-    def to_js_uint8(arr): return "new Uint8Array([" + ",".join(str(int(v)) for v in arr.flatten()) + "])"
-    def to_js_int32(arr): return "new Int32Array([" + ",".join(str(int(v)) for v in arr.flatten()) + "])"
-
+    # Используем json.dumps для быстрой и безопасной сериализации
     js_data = {
-        "xs": to_js_float(pc[:, 0]),
-        "ys": to_js_float(pc[:, 1]),
-        "zs": to_js_float(pc[:, 2]),
-        "rs": to_js_uint8(pc_color[:, 0] * 255),
-        "gs": to_js_uint8(pc_color[:, 1] * 255),
-        "bs": to_js_uint8(pc_color[:, 2] * 255),
-        "insts": to_js_int32(insts_gt),
-        "cats": to_js_int32(cats_gt),
-        "insts_pred": to_js_int32(insts_pred),
-        "cats_pred": to_js_int32(cats_pred),
+        "xs": pc[:, 0].astype(np.float32).tolist(),
+        "ys": pc[:, 1].astype(np.float32).tolist(),
+        "zs": pc[:, 2].astype(np.float32).tolist(),
+        "rs": (pc_color[:, 0] * 255).astype(np.uint8).tolist(),
+        "gs": (pc_color[:, 1] * 255).astype(np.uint8).tolist(),
+        "bs": (pc_color[:, 2] * 255).astype(np.uint8).tolist(),
+        "inst_gt": insts_gt.tolist(),
+        "cat_gt": cats_gt.tolist(),
+        "inst_p": insts_pred.tolist(),
+        "cat_p": cats_pred.tolist(),
     }
 
-    # Simplified HTML Template (from generate_sample_viewer.py)
-    html_template = f"""<!DOCTYPE html>
-    <html><head><meta charset="utf-8">
-    <title>Strawberry ODIN - {scene_name}</title>
-    <style>
-        body {{ margin: 0; background: #0d1117; color: #fff; font-family: sans-serif; overflow: hidden; }}
-        #ui {{ position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 5px; }}
-        .btn {{ padding: 6px 12px; background: #21262d; border: 1px solid #30363d; color: #ccc; cursor: pointer; border-radius: 4px; font-size: 12px; }}
-        .btn.active {{ background: #1f6feb; border-color: #388bfd; color: #fff; }}
-        #legend {{ position: absolute; bottom: 10px; left: 10px; font-size: 12px; background: rgba(0,0,0,0.5); padding: 5px; }}
-    </style>
-    </head>
-    <body>
-    <div id="ui">
-        <button class="btn active" onclick="setMode('rgb', this)">RGB</button>
-        <span style="padding: 5px">GT:</span>
-        <button class="btn" onclick="setMode('seg', this)">GT Cat</button>
-        <button class="btn" onclick="setMode('inst', this)">GT Inst</button>
-        <span style="padding: 5px">Pred:</span>
-        <button class="btn" onclick="setMode('seg_pred', this)">Pred Cat</button>
-        <button class="btn" onclick="setMode('inst_pred', this)">Pred Inst</button>
+    html_template = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Strawberry Viewer</title>
+    <style>body{margin:0;background:#000;color:#fff;font-family:sans-serif;overflow:hidden;}
+    #ui{position:absolute;top:10px;left:10px;z-index:10;display:flex;gap:5px;}
+    .btn{padding:5px 10px;background:#222;color:#ccc;border:1px solid #444;cursor:pointer;}
+    .btn.active{background:#007bff;border-color:#0056b3;color:#fff;}</style>
+    </head><body><div id="ui">
+    <button class="btn active" onclick="setMode('rgb',this)">RGB</button>
+    <button class="btn" onclick="setMode('gt',this)">GT Inst</button>
+    <button class="btn" onclick="setMode('gt_c',this)">GT Cat</button>
+    <button class="btn" onclick="setMode('pred',this)">Pred Inst</button>
+    <button class="btn" onclick="setMode('pred_c',this)">Pred Cat</button>
     </div>
-    <div id="legend">Ripe: Red | Unripe: Green | Half: Orange</div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script>
-        const XS={js_data['xs']}, YS={js_data['ys']}, ZS={js_data['zs']};
-        const RS={js_data['rs']}, GS={js_data['gs']}, BS={js_data['bs']};
-        const INSTS={js_data['insts']}, CATS={js_data['cats']};
-        const INSTS_P={js_data['insts_pred']}, CATS_P={js_data['cats_pred']};
-        const N = XS.length;
-        const PALETTE = {{ '0': [232,68,68], '1': [72,199,72], '2': [240,160,40], '-1': [80,80,80] }};
-
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
-        const renderer = new THREE.WebGLRenderer(); renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
-        const controls = new THREE.OrbitControls(camera, renderer.domElement);
-        camera.position.set(0, 1, 2);
-
-        const geo = new THREE.BufferGeometry();
-        const pos = new Float32Array(N * 3);
-        const col = new Float32Array(N * 3);
-        for(let i=0; i<N; i++) {{ pos[i*3]=XS[i]; pos[i*3+1]=YS[i]; pos[i*3+2]=ZS[i]; }}
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-
-        function setMode(mode, btn) {{
-            document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
-            if(btn) btn.classList.add('active');
-            for(let i=0; i<N; i++) {{
-                let r,g,b;
-                if(mode==='rgb') {{ r=RS[i]/255; g=GS[i]/255; b=BS[i]/255; }}
-                else if(mode==='seg' || mode==='seg_pred') {{
-                    const c = (mode==='seg') ? CATS[i] : CATS_P[i];
-                    const rgb = PALETTE[c] || PALETTE['-1'];
-                    r=rgb[0]/255; g=rgb[1]/255; b=rgb[2]/255;
-                }} else {{
-                    const inst = (mode==='inst') ? INSTS[i] : INSTS_P[i];
-                    if(inst===-1) {{ r=0.3; g=0.3; b=0.3; }}
-                    else {{ const h=(inst*2654435761)>>>0; r=((h>>>16)&255)/255; g=((h>>>8)&255)/255; b=(h&255)/255; }}
-                }}
-                col[i*3]=r; col[i*3+1]=g; col[i*3+2]=b;
-            }}
-            geo.attributes.color.needsUpdate = true;
-        }}
-        setMode('rgb');
-        scene.add(new THREE.Points(geo, new THREE.PointsMaterial({{ size:0.005, vertexColors:true }})));
-        animate();
-        function animate() {{ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }}
-    </script></body></html>"""
+    const D = """ + json.dumps(js_data) + """;
+    const N = D.xs.length;
+    const PAL = {'0':[255,0,0],'1':[0,255,0],'2':[255,165,0],'-1':[60,60,60]};
+    const scene=new THREE.Scene(); 
+    const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.01,100);
+    const renderer=new THREE.WebGLRenderer(); renderer.setSize(window.innerWidth,window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    const controls=new THREE.OrbitControls(camera,renderer.domElement);
+    camera.position.set(0,1,2);
+    const geo=new THREE.BufferGeometry();
+    const pos=new Float32Array(N*3), col=new Float32Array(N*3);
+    for(let i=0;i<N;i++){ pos[i*3]=D.xs[i]; pos[i*3+1]=D.ys[i]; pos[i*3+2]=D.zs[i]; }
+    geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+    geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+    function setMode(m,b){
+        document.querySelectorAll('.btn').forEach(x=>x.classList.remove('active')); if(b)b.classList.add('active');
+        for(let i=0;i<N;i++){
+            let r,g,bl;
+            if(m==='rgb'){ r=D.rs[i]/255; g=D.gs[i]/255; bl=D.bs[i]/255; }
+            else if(m==='gt'||m==='pred'){
+                let id = (m==='gt')?D.inst_gt[i]:D.inst_p[i];
+                if(id===-1){ r=g=bl=0.2; } else { let h=(id*2654435761)>>>0; r=((h>>>16)&255)/255; g=((h>>>8)&255)/255; bl=(h&255)/255; }
+            } else {
+                let c = (m==='gt_c')?D.cat_gt[i]:D.cat_p[i];
+                let rgb = PAL[c]||PAL['-1']; r=rgb[0]/255; g=rgb[1]/255; bl=rgb[2]/255;
+            }
+            col[i*3]=r; col[i*3+1]=g; col[i*3+2]=bl;
+        }
+        geo.attributes.color.needsUpdate=true;
+    }
+    setMode('rgb'); scene.add(new THREE.Points(geo,new THREE.PointsMaterial({size:0.005,vertexColors:true})));
+    function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera); }
+    animate();</script></body></html>"""
 
     if not os.path.exists(data_dir): os.makedirs(data_dir)
     with open(os.path.join(data_dir, f"{scene_name}.html"), "w", encoding="utf-8") as f:
