@@ -265,6 +265,7 @@ class StrawberryDatasetMapper:
         dataset_dict["do_camera_drop"] = getattr(self.cfg.INPUT, "CAMERA_DROP", False)
         dataset_dict["max_frames"] = len(images)  # the actual number of frames loaded
         dataset_dict["use_ghost"] = getattr(self.cfg, "USE_GHOST_POINTS", False)
+        dataset_dict["multiplier"] = 1.0  # Loss multiplier for dataset balancing
         dataset_dict["images"] = images
         dataset_dict["padding_masks"] = torch.zeros((h, w), dtype=torch.bool)
         dataset_dict["depths"] = depths
