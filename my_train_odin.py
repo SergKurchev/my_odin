@@ -30,12 +30,12 @@ from detectron2.engine import (
     SimpleTrainer,
     hooks
 )
-from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.data import DatasetCatalog, MetadataCatalog, build_detection_test_loader, build_detection_train_loader
 from detectron2.evaluation import DatasetEvaluator, inference_on_dataset
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
-from detectron2.utils.events import get_event_storage
+from detectron2.utils.events import EventStorage, get_event_storage
 from detectron2.structures import Instances, BitMasks
 
 from odin import (
@@ -532,6 +532,40 @@ class Strawberry3DEvaluator(DatasetEvaluator):
 # -------------------------------------------------------------------------
 # 4. Trainer Override
 # -------------------------------------------------------------------------
+class AMPTrainerWithClipping(AMPTrainer):
+    def run_step(self):
+        """
+        Кастомный шаг обучения с поддержкой Gradient Clipping для AMP.
+        В стандартном AMPTrainer из Detectron2 обрезка градиентов не встроена.
+        """
+        assert self.model.training, "[AMPTrainerWithClipping] model was not in training mode!"
+        data = next(self._data_loader_iter)
+        
+        # 1. Считаем потери внутри autocast
+        with torch.cuda.amp.autocast():
+            loss_dict = self.model(data)
+            if isinstance(loss_dict, torch.Tensor):
+                losses = loss_dict
+                loss_dict = {"total_loss": loss_dict}
+            else:
+                losses = sum(loss_dict.values())
+        
+        # 2. Обнуляем градиенты и делаем backward через scaler
+        self.optimizer.zero_grad()
+        self.grad_scaler.scale(losses).backward()
+        
+        # 3. UNSSCALE перед CLIP_GRADIENTS (это ключевой момент для AMP)
+        self.grad_scaler.unscale_(self.optimizer)
+        
+        # 4. Обрезаем градиенты
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
+        
+        # 5. Шагаем через scaler
+        self.grad_scaler.step(self.optimizer)
+        self.grad_scaler.update()
+        
+        self._write_metrics(loss_dict)
+
 class MyTrainer(DefaultTrainer):
     def __init__(self, cfg):
         super(DefaultTrainer, self).__init__()
@@ -548,7 +582,12 @@ class MyTrainer(DefaultTrainer):
         # При одиночном запуске DDP требует init_process_group, которого нет
         if comm.get_world_size() > 1:
             model = DistributedDataParallel(model, device_ids=[comm.get_local_rank()])
-        self._trainer = (AMPTrainer if cfg.SOLVER.AMP.ENABLED else SimpleTrainer)(model, data_loader, optimizer)
+        
+        # Используем наш кастомный трейнер с обрезкой градиентов
+        if cfg.SOLVER.AMP.ENABLED:
+            self._trainer = AMPTrainerWithClipping(model, data_loader, optimizer)
+        else:
+            self._trainer = SimpleTrainer(model, data_loader, optimizer)
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
         self.checkpointer = DetectionCheckpointer(model, cfg.OUTPUT_DIR, trainer=weakref.proxy(self))
@@ -593,6 +632,20 @@ class MyTrainer(DefaultTrainer):
             )
         )
         return all_hooks
+
+    @classmethod
+    def build_lr_scheduler(cls, cfg, optimizer):
+        """
+        Переопределяем планировщик, чтобы увеличить Warmup (разминку) для стабильности.
+        """
+        from detectron2.solver import build_lr_scheduler
+        
+        # Увеличиваем Warmup до 500 шагов
+        cfg.defrost()
+        cfg.SOLVER.WARMUP_ITERS = 500
+        cfg.freeze()
+        
+        return build_lr_scheduler(cfg, optimizer)
 
     @classmethod
     def test(cls, cfg, model, evaluators=None):
