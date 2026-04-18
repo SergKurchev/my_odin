@@ -108,15 +108,19 @@ def unproject(intrinsics, poses, depths):
     B, V, H, W = depths.shape
     fx, fy, px, py = intrinsics[..., 0, 0][..., None], intrinsics[..., 1, 1][..., None], intrinsics[..., 0, 2][..., None], intrinsics[..., 1, 2][..., None]
 
+    if not hasattr(backproject_depth, "_logged"):
+        print(">>> ODIN: Standard Unity Y-flip applied to backprojection.")
+        backproject_depth._logged = True
+
     y = torch.arange(0, H).to(depths.device)
     x = torch.arange(0, W).to(depths.device)
-    y, x = torch.meshgrid(y, x)
+    y, x = torch.meshgrid(y, x, indexing='ij')
 
     x = x[None, None].repeat(B, V, 1, 1).flatten(2)
     y = y[None, None].repeat(B, V, 1, 1).flatten(2)
     z = depths.flatten(2)
     x = (x - px) * z / fx
-    y = (y - py) * z / fy
+    y = -(y - py) * z / fy # Match test_vis.py line 105
     cam_coords = torch.stack([
         x, y, z, torch.ones_like(x)
     ], -1)

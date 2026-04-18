@@ -1081,7 +1081,7 @@ class ODIN(nn.Module):
         bs, v, H_padded, W_padded = shape
         our_pc = input_per_image['original_xyz']
         if valids is not None:
-            our_pc = our_pc[valids]
+            our_pc = our_pc[0][valids]
         else:
             if self.cfg.HIGH_RES_INPUT:
                 our_pc = our_pc.float().permute(0, 3, 1, 2)
