@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from imageio import imread
 from PIL import Image
+from torch.cuda.amp import autocast
 
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
@@ -592,6 +593,22 @@ class MyTrainer(DefaultTrainer):
             )
         )
         return all_hooks
+
+    @classmethod
+    def test(cls, cfg, model, evaluators=None):
+        """
+        Запускаем инференс (валидацию) с использованием AMP (Mixed Precision).
+        Это позволяет экономить память точно так же, как при обучении.
+        """
+        # Принудительно очищаем кэш перед валидацией
+        torch.cuda.empty_cache()
+        
+        # Оборачиваем инференс в autocast, если AMP включен в конфиге
+        if cfg.SOLVER.AMP.ENABLED:
+            with autocast():
+                return super().test(cfg, model, evaluators)
+        else:
+            return super().test(cfg, model, evaluators)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
