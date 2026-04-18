@@ -792,7 +792,7 @@ class ODIN(nn.Module):
             if multiview_data is not None:
                 multiview_data_ = {}
                 multiview_data_['multi_scale_xyz'] = multiview_data['multi_scale_xyz'][-1][i]
-                if self.cfg.INPUT.VOXELIZE:
+                if 'multi_scale_p2v' in multiview_data:
                     multiview_data_['multi_scale_p2v'] = multiview_data['multi_scale_p2v'][-1][i]
 
             if self.eval_sparse:
@@ -1221,7 +1221,8 @@ class ODIN(nn.Module):
         
         pred_masks = self.upsample_pred_masks(
             pred_masks, batched_inputs, multiview_data, shape,
-            downsample=self.cfg.HIGH_RES_INPUT, interp="trilinear"
+            downsample=self.cfg.HIGH_RES_INPUT, 
+            interp="trilinear" if getattr(self.cfg.INPUT, "VOXELIZE", False) else "bilinear"
         )
 
         if valids is not None:
