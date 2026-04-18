@@ -34,6 +34,7 @@ from detectron2.evaluation import DatasetEvaluator, inference_on_dataset
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
+from detectron2.utils.events import get_event_storage
 from detectron2.structures import Instances, BitMasks
 
 from odin import (
