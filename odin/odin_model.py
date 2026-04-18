@@ -1128,6 +1128,9 @@ class ODIN(nn.Module):
                 gt_masks = F.interpolate(
                     gt_masks.float(), scale_factor=0.5, mode="nearest"
                 ) > 0.5
+            
+            # Принудительно выпрямляем маски в формат [Объекты, Точки]
+            if gt_masks.dim() > 2:
                 gt_masks = gt_masks.flatten(1)
             gt_masks = gt_masks.cpu().numpy()
         gt_labels = targets[index]['labels'].cpu().numpy()
