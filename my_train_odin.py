@@ -677,6 +677,10 @@ def setup(args):
     cfg.INPUT.MIN_SIZE_TEST = args.image_size
     cfg.INPUT.MAX_SIZE_TEST = args.image_size
     
+    # Ограничиваем количество кадров на валидации, чтобы избежать OOM
+    cfg.MAX_FRAME_NUM = args.num_frames
+    cfg.SOLVER.TEST_IMS_PER_BATCH = 1
+    
     # Визуализация
     if args.visualize:
         cfg.VISUALIZE = True
