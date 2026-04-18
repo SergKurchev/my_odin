@@ -290,12 +290,13 @@ class StrawberryDatasetMapper:
             poses_tensor = torch.stack(poses)
             intrinsics_tensor = torch.stack(intrinsics)
             
-            multi_scale_xyz, _, original_xyz = backprojector_dataloader(
+            multi_scale_xyz, multi_scale_p2v, original_xyz = backprojector_dataloader(
                 list(features.values()), depths_tensor, poses_tensor, intrinsics_tensor,
                 augment=False, method=self.cfg.MODEL.INTERPOLATION_METHOD, scannet_pc=None,
                 padding=(pad_h, pad_w), do_rot_scale=getattr(self.cfg, "DO_ROT_SCALE", False)
             )
             dataset_dict['multi_scale_xyz'] = multi_scale_xyz[::-1]
+            dataset_dict['multi_scale_p2v'] = multi_scale_p2v[::-1]
             dataset_dict['original_xyz'] = original_xyz[0]
 
         dataset_dict["all_classes"] = copy.copy(CATEGORIES)
