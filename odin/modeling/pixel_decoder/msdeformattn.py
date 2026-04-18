@@ -461,7 +461,8 @@ class MSDeformAttnPixelDecoder(nn.Module):
                 srcs, pos)
             bs = y.shape[0]
             
-        
+        if torch.isnan(y).any():
+            raise RuntimeError("NaN detected in MultiScaleDeformableAttention output! Try reducing Learning Rate or checking input data.")
 
 
         # Split again into multi-scale features (list)
