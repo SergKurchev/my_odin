@@ -597,7 +597,7 @@ def setup(args):
     
     # Конфигурация размера батча и кол-ва кадров (требование: 1 GPU, Batch=1, Frames=5)
     cfg.SOLVER.IMS_PER_BATCH = 1
-    cfg.INPUT.SAMPLING_FRAME_NUM = 3
+    cfg.INPUT.SAMPLING_FRAME_NUM = 5
     
     cfg.freeze()
     default_setup(cfg, args)
