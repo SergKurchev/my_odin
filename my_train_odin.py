@@ -606,12 +606,25 @@ def setup(args):
     
     # Конфигурация размера батча и кол-ва кадров
     cfg.SOLVER.IMS_PER_BATCH = args.batch_size
-    cfg.SOLVER.MAX_ITER = args.max_iter
+    
+    # Расчет макс. итераций на основе эпох, если задано
+    dataset_len = len(DatasetCatalog.get(cfg.DATASETS.TRAIN[0]))
+    if args.num_epochs > 0:
+        cfg.SOLVER.MAX_ITER = int(args.num_epochs * (dataset_len / args.batch_size))
+        print(f"Calculated MAX_ITER: {cfg.SOLVER.MAX_ITER} for {args.num_epochs} epochs")
+    else:
+        cfg.SOLVER.MAX_ITER = args.max_iter
+
     cfg.SOLVER.BASE_LR = args.lr
     cfg.TEST.EVAL_PERIOD = args.eval_period
-    cfg.DATALOADER.NUM_WORKERS = 4 # Ускоряем загрузку данных
+    cfg.DATALOADER.NUM_WORKERS = 4 
     
     cfg.INPUT.SAMPLING_FRAME_NUM = args.num_frames
+    cfg.INPUT.IMAGE_SIZE = args.image_size
+    cfg.INPUT.MIN_SIZE_TRAIN = (args.image_size,)
+    cfg.INPUT.MAX_SIZE_TRAIN = args.image_size
+    cfg.INPUT.MIN_SIZE_TEST = args.image_size
+    cfg.INPUT.MAX_SIZE_TEST = args.image_size
     
     cfg.freeze()
     default_setup(cfg, args)
@@ -636,10 +649,12 @@ if __name__ == "__main__":
     parser.add_argument("--splits_file", type=str, required=True, help="Path to splits.json")
     
     # Параметры для управления из ноутбука
+    parser.add_argument("--num_epochs", type=float, default=-1, help="Total epochs (overrides max_iter)")
     parser.add_argument("--max_iter", type=int, default=3000, help="Total iterations")
     parser.add_argument("--eval_period", type=int, default=200, help="Run evaluation every N iterations")
     parser.add_argument("--batch_size", type=int, default=1, help="Images per batch")
     parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
+    parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
     
     args = parser.parse_args()
