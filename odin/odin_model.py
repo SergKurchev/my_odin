@@ -789,6 +789,7 @@ class ODIN(nn.Module):
             shape_ = [1, v, H_padded, W_padded]
             
             multiview_data_ = None
+            valids = None
             if multiview_data is not None:
                 multiview_data_ = {}
                 multiview_data_['multi_scale_xyz'] = multiview_data['multi_scale_xyz'][-1][i]
