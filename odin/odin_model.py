@@ -155,6 +155,10 @@ class ODIN(nn.Module):
         self.supervise_sparse = supervise_sparse
         self.eval_sparse = eval_sparse
         self.cfg = cfg
+        
+        # Переменные для контроля количества визуализаций (только 3 на эпоху)
+        self._vis_count = 0
+        self._last_vis_iter = -1
 
         self.categories = {k: v for k, v in enumerate(self.metadata.thing_classes)}
 
@@ -843,12 +847,30 @@ class ODIN(nn.Module):
                 if not decoder_3d:
                     processed_results[-1]["instances"] = instance_r["2d"]
 
-            if self.cfg.VISUALIZE_3D and decoder_3d and i < 3:
-                self.visualize_pred_on_ours(
-                    i, images, [bs, v, H_padded, W_padded],
-                    input_per_image, processed_results[-1], 
-                    targets, valids
-                )   
+            img_id = input_per_image.get('image_id', 'unknown')
+            
+            if self.cfg.VISUALIZE_3D and decoder_3d:
+                # Получаем текущую итерацию через storage
+                from detectron2.utils.events import get_event_storage
+                try:
+                    storage = get_event_storage()
+                    curr_iter = storage.iter
+                except:
+                    curr_iter = 0
+                
+                # Сбрасываем счетчик, если началась новая итерация оценки
+                if curr_iter != self._last_vis_iter:
+                    self._vis_count = 0
+                    self._last_vis_iter = curr_iter
+                
+                # Визуализируем только первые 3 сэмпла за всю эпоху
+                if self._vis_count < 3:
+                    self.visualize_pred_on_ours(
+                        i, images, [bs, v, H_padded, W_padded],
+                        input_per_image, processed_results[-1], 
+                        targets, valids
+                    )
+                    self._vis_count += 1
     
         return processed_results
           
@@ -1141,6 +1163,8 @@ class ODIN(nn.Module):
         print(f">>> ODIN Final Vis: pc_shape={our_pc.shape}, range=[{our_pc.min().item():.2f}, {our_pc.max().item():.2f}], mean={our_pc.mean().item():.4f}")
 
         dataset_name = input_per_image['dataset_name']
+        scene_id = input_per_image.get('image_id', 'unknown')
+        scene_name = f"sample_{scene_id}"
         
         # Организуем папки по итерациям
         try:
