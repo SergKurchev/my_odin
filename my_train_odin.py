@@ -10,6 +10,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 from imageio import imread
@@ -209,28 +210,43 @@ class StrawberryDatasetMapper:
         intrinsics = []
         instances_all = []
         
+        target_size = self.cfg.INPUT.IMAGE_SIZE # usually 320
+        
         for idx in range(num_sample_frames):
-            # RGB (take only first 3 channels to drop Alpha if RGBA)
+            # RGB
             img = imread(file_names[idx])[..., :3]
+            old_h, old_w = img.shape[:2]
+            
+            # Resize
+            img = cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
             img_tensor = torch.as_tensor(np.ascontiguousarray(img.transpose(2, 0, 1)))
             images.append(img_tensor)
             
-            # Depth (assuming saved as float32 in meters and bottom-up as per viewer script)
+            # Depth
             depth = np.load(depth_file_names[idx])
-            depth = depth[::-1, :].copy() # Flip vertically
+            depth = depth[::-1, :].copy() 
+            depth = cv2.resize(depth, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
             depths.append(torch.as_tensor(depth))
             
-            # Poses & Intrinsics
+            # Intrinsics Scaling
+            K = intrinsics_list[idx].copy()
+            K[0, 0] *= (target_size / old_w)
+            K[0, 2] *= (target_size / old_w)
+            K[1, 1] *= (target_size / old_h)
+            K[1, 2] *= (target_size / old_h)
+            intrinsics.append(torch.from_numpy(K))
+            
+            # Poses
             poses.append(torch.from_numpy(poses_list[idx]))
-            intrinsics.append(torch.from_numpy(intrinsics_list[idx]))
             
             # Masks processing
-            image_shape = img.shape[:2]
+            image_shape = (target_size, target_size)
             instances = Instances(image_shape)
             has_masks = False
             
             if masks_file_names[idx] is not None and os.path.exists(masks_file_names[idx]):
                 mask_img = imread(masks_file_names[idx]).astype(np.uint8)
+                mask_img = cv2.resize(mask_img, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
                 mr, mg, mb = mask_img[:, :, 0], mask_img[:, :, 1], mask_img[:, :, 2]
                 
                 gt_classes = []
@@ -239,7 +255,7 @@ class StrawberryDatasetMapper:
                 
                 for color, info in color_map.items():
                     if info["category_id"] not in CATEGORIES:
-                        continue # Ignore peduncle
+                        continue 
                     px = (mr == color[0]) & (mg == color[1]) & (mb == color[2])
                     if np.any(px):
                         gt_classes.append(info["category_id"])
@@ -255,7 +271,7 @@ class StrawberryDatasetMapper:
             if not has_masks:
                 instances.gt_classes = torch.zeros(0, dtype=torch.int64)
                 instances.instance_ids = torch.zeros(0, dtype=torch.int64)
-                instances.gt_masks = torch.zeros((0, image_shape[0], image_shape[1]))
+                instances.gt_masks = torch.zeros((0, target_size, target_size))
                 
             instances_all.append(instances)
         
@@ -581,7 +597,7 @@ def setup(args):
     
     # Конфигурация размера батча и кол-ва кадров (требование: 1 GPU, Batch=1, Frames=5)
     cfg.SOLVER.IMS_PER_BATCH = 1
-    cfg.INPUT.SAMPLING_FRAME_NUM = 5
+    cfg.INPUT.SAMPLING_FRAME_NUM = 3
     
     cfg.freeze()
     default_setup(cfg, args)
