@@ -59,6 +59,8 @@ class Scannet_Evaluator():
                 self.CLASS_LABELS = SCANNET_INSTANCE_CLASS_NAMES_200
         elif 'matterport' in dataset_name:
             self.CLASS_LABELS = MATTERPORT_CLASS_LABELS
+        elif 'strawberry' in dataset_name:
+            self.CLASS_LABELS = ["Ripe", "Unripe", "Half-ripe"]
         else:
             self.CLASS_LABELS = SCANNET_INSTANCE_CLASS_NAMES
         
@@ -255,6 +257,83 @@ class Scannet_Evaluator():
                         ap_current = float('nan')
                     ap[di,li,oi] = ap_current
         return ap
+
+    def compute_panoptic_metrics(self, matches):
+        """
+        Computes PQ, SQ, RQ based on the formulas in models_evaluation_protocol.md.
+        Using IoU threshold 0.5 (standard for PQ).
+        """
+        overlap_th = 0.5
+        pq_results = {}
+        
+        total_tp = 0
+        total_fp = 0
+        total_fn = 0
+        total_iou_sum = 0.0
+
+        for li, label_name in enumerate(self.CLASS_LABELS):
+            tp = 0
+            fp = 0
+            fn = 0
+            iou_sum = 0.0
+            
+            # PQ calculation: match pred to gt with IoU > 0.5
+            # In each scan (matches[m])
+            for m in matches:
+                pred_instances = matches[m]['pred'][label_name]
+                gt_instances = matches[m]['gt'][label_name]
+                
+                # Filter gt by region size if needed (using opt standard)
+                min_region_size = opt['min_region_sizes'][0]
+                gt_instances = [gt for gt in gt_instances if gt['vert_count'] >= min_region_size]
+
+                matched_gt_ids = set()
+                matched_pred_ids = set()
+
+                for gti, gt in enumerate(gt_instances):
+                    found = False
+                    for pred in gt['matched_pred']:
+                        # Calculate IoU
+                        intersection = pred['intersection']
+                        union = gt['vert_count'] + pred['vert_count'] - intersection
+                        iou = float(intersection) / union if union > 0 else 0
+                        
+                        if iou > overlap_th:
+                            tp += 1
+                            iou_sum += iou
+                            matched_gt_ids.add(gti)
+                            matched_pred_ids.add(pred['uuid'])
+                            found = True
+                            break # PQ: unique matching for IoU > 0.5
+                
+                fn += (len(gt_instances) - len(matched_gt_ids))
+                
+                # FP: preds that didn't match any GT with IoU > 0.5
+                for pred in pred_instances:
+                    if pred['uuid'] not in matched_pred_ids:
+                        fp += 1
+            
+            # Compute SQ, RQ, PQ for this class
+            sq = iou_sum / tp if tp > 0 else 0.0
+            rq = tp / (tp + 0.5 * fp + 0.5 * fn) if (tp + 0.5 * fp + 0.5 * fn) > 0 else 0.0
+            pq = sq * rq
+            
+            pq_results[label_name] = {"pq": pq, "sq": sq, "rq": rq}
+            
+            total_tp += tp
+            total_fp += fp
+            total_fn += fn
+            total_iou_sum += iou_sum
+
+        # Average across classes
+        avg_sq = total_iou_sum / total_tp if total_tp > 0 else 0.0
+        avg_rq = total_tp / (total_tp + 0.5 * total_fp + 0.5 * total_fn) if (total_tp + 0.5 * total_fp + 0.5 * total_fn) > 0 else 0.0
+        avg_pq = avg_sq * avg_rq
+        
+        return {
+            "all": {"pq": avg_pq, "sq": avg_sq, "rq": avg_rq},
+            "classes": pq_results
+        }
 
     def compute_averages(self, aps):
         d_inf = 0

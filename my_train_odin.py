@@ -44,6 +44,9 @@ from odin import (
     build_detection_train_loader,
     build_detection_test_loader,
 )
+from odin.data_video.segmentation_benchmark.evaluate_semantic_instance import Scannet_Evaluator
+from odin.utils.util_video_to_3d import convert_video_instances_to_3d
+from odin.utils.util_3d import convert_3d_to_2d_dict_format
 from odin.modeling.backproject.backproject import backprojector_dataloader, multiscsale_voxelize
 import pandas as pd
 
@@ -356,14 +359,18 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self._dataset_name = dataset_name
         self._output_dir = output_dir
         self.cfg = cfg
+        self._cpu_device = torch.device("cpu")
+        self.multiplier = 1000 # Standard for instance encoding
+        
+        # Инциализируем реальный эвалюатор из ODIN (с поддержкой strawberry)
+        self.scannet_evaluator = Scannet_Evaluator("strawberry")
+        
         self.reset()
         os.makedirs(self._output_dir, exist_ok=True)
         
     def reset(self):
         self.predictions = []
         self.ground_truths = []
-        self.start_times = []
-        self.end_times = []
         
     def process(self, inputs, outputs):
         """
@@ -371,12 +378,39 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         outputs: List of model outputs
         """
         for _in, _out in zip(inputs, outputs):
+            # Сохраняем как есть, парсинг сделаем в evaluate для удобства отладки
             self.predictions.append(_out)
             self.ground_truths.append(_in)
-            self.end_times.append(time.perf_counter())
+
+    def _parse_gt(self, _in):
+        h, w = _in['instances_all'][0].image_size
+        num_frames = len(_in['instances_all'])
+        target_dict = convert_video_instances_to_3d(
+            _in['instances_all'],
+            num_frames,
+            h, w,
+            self._cpu_device,
+            convert_point_semantic_instance=True,
+            multiplier=self.multiplier
+        )
+        return {
+            "masks": target_dict["masks"].cpu(),
+            "labels": target_dict["point_semantic_instance_label"].flatten(0).cpu(),
+            "class_labels": target_dict["labels"].cpu()
+        }
+
+    def _parse_pred(self, _out):
+        pred = _out['instances_3d']
+        res = {}
+        for key in pred:
+            if isinstance(pred[key], torch.Tensor):
+                res[key] = pred[key].cpu().numpy()
+            else:
+                res[key] = pred[key]
+        return res
 
     def evaluate(self):
-        logging.getLogger(__name__).info("Evaluating 3D Instance metrics (Strawberry)")
+        logging.getLogger(__name__).info("Evaluating 3D Instance metrics (Strawberry) on full validation set...")
         
         # 1. Точная выгрузка визуализаций по правилам `generate_sample_viewer.py`
         import sys
@@ -511,19 +545,43 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                         f.write(html)
                     logging.getLogger(__name__).info(f"HTML сохранен: {out_html_path}")
 
-        # 2. Метрики (PQ, mAP и другие)
+        # 2. Подготовка данных для реального эвалюатора
+        preds_dict = {}
+        gts_dict = {}
+        
+        for idx, (_in, _out) in enumerate(zip(self.ground_truths, self.predictions)):
+            preds_dict[idx] = self._parse_pred(_out)
+            gts_dict[idx] = self._parse_gt(_in)
+            
+        # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
+        # Scannet_Evaluator.evaluate возвращает данные для AP
+        matches = {}
+        for i, (k, v) in enumerate(preds_dict.items()):
+            gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[i])
+            matches[i] = {'gt': gt2pred, 'pred': pred2gt}
+            
+        aps = self.scannet_evaluator.evaluate_matches(matches)
+        ap_results = self.scannet_evaluator.compute_averages(aps)
+        
+        # 4. Расчет PQ, SQ, RQ через наш новый метод
+        panoptic_results = self.scannet_evaluator.compute_panoptic_metrics(matches)
+        
+        # 5. Формирование финального словаря метрик
         metrics = {
-            "PQ": np.random.uniform(30.0, 60.0), 
-            "SQ": np.random.uniform(40.0, 70.0), 
-            "RQ": np.random.uniform(40.0, 70.0), 
-            "mAP": np.random.uniform(20.0, 50.0),      
-            "mAP@50": np.random.uniform(25.0, 60.0),   
-            "mAP@25": np.random.uniform(35.0, 70.0),   
+            "PQ": panoptic_results["all"]["pq"] * 100.0,
+            "SQ": panoptic_results["all"]["sq"] * 100.0,
+            "RQ": panoptic_results["all"]["rq"] * 100.0,
+            "mAP": ap_results["all_ap"] * 100.0,
+            "mAP@50": ap_results["all_ap_50%"] * 100.0,
+            "mAP@25": ap_results["all_ap_25%"] * 100.0,
         }
         
+        # Режим дебага: выводим PrettyTable в консоль
+        if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
+            self.scannet_evaluator.print_results(ap_results, logging.getLogger(__name__))
+
         # Пытаемся получить текущую итерацию и лосс из хранилища Detectron2
         try:
-            from detectron2.utils.events import get_event_storage
             storage = get_event_storage()
             iteration = storage.iter
             try:
@@ -546,9 +604,12 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         df = df[cols]
 
         df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
-        logging.getLogger(__name__).info(f"Метрики (iter {iteration}, loss {total_loss:.4f}) записаны в {csv_path}")
+        logging.getLogger(__name__).info(f"Метрики (iter {iteration}, PQ {metrics['PQ']:.2f}, mAP@50 {metrics['mAP@50']:.2f}) записаны в {csv_path}")
         
-        return {"strawberry_3d": metrics}
+        # Возвращаем в формате D2 для BestCheckpointer
+        # Ключ должен соответствовать тому, что мы будем мониторить
+        res = {f"strawberry_3d/{k}": v for k, v in metrics.items()}
+        return res
 
 
 # -------------------------------------------------------------------------
@@ -666,13 +727,13 @@ class MyTrainer(DefaultTrainer):
         max_time = getattr(self.cfg, "MAX_TIME_HOURS", 11.5)
         all_hooks.append(TimeLimitHook(max_time))
 
-        # Добавляем BestCheckpointer для сохранения лучшей модели по AP50
+        # Добавляем BestCheckpointer для сохранения лучшей модели по PQ (согласно протоколу)
         from detectron2.engine.hooks import BestCheckpointer
         all_hooks.append(
             BestCheckpointer(
                 self.cfg.TEST.EVAL_PERIOD,
                 self.checkpointer,
-                "strawberry_3d/mAP@50",
+                "strawberry_3d/PQ",
                 "max",
                 file_prefix="model_best",
             )
