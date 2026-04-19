@@ -467,17 +467,45 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 chunks = []
                 stride = 2
                 
+                # Подготовка предсказаний для быстрого доступа
+                pred_data = _out.get("instances_3d", {})
+                pred_masks = pred_data.get("pred_masks") # [NumInstances, NumPoints]
+                pred_classes = pred_data.get("pred_classes") # [NumInstances]
+                
+                num_pred_instances = 0
+                point_pred_inst = None
+                point_pred_cat = None
+                
+                if pred_masks is not None and len(pred_masks) > 0:
+                    num_pred_instances = pred_masks.shape[0]
+                    num_pts_total = pred_masks.shape[1]
+                    # Создаем карту меток для всех точек сразу
+                    point_pred_inst = np.zeros(num_pts_total, dtype=np.int32)
+                    point_pred_cat = np.zeros(num_pts_total, dtype=np.int32)
+                    
+                    # Если маски перекрываются, побеждает последняя (или с высшим скором, но тут упростим)
+                    for inst_idx in range(num_pred_instances):
+                        m = pred_masks[inst_idx] > 0
+                        point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза
+                        point_pred_cat[m] = int(pred_classes[inst_idx]) + 1 # 1-indexed
+
                 images = _in.get("images", [])
                 depths = _in.get("depths", [])
                 poses = _in.get("poses", [])
                 intrinsics = _in.get("intrinsics", [])
                 color_map = _in.get("color_map", {})
                 
-                for i in range(len(images)):
-                    img = images[i].numpy().transpose(1, 2, 0)
-                    Z_full = depths[i].numpy() # Уже перевёрнуто (flipped) в маппере
-                    pose = poses[i].numpy()
-                    intr = intrinsics[i].numpy()
+                # Рассчитываем padding как в маппере для правильной глобальной индексации
+                H_orig, W_orig = images[0].shape[1:]
+                div = self.cfg.INPUT.SIZE_DIVISIBILITY
+                H_padded = int(np.ceil(H_orig / div) * div)
+                W_padded = int(np.ceil(W_orig / div) * div)
+
+                for camera_idx in range(len(images)):
+                    img = images[camera_idx].numpy().transpose(1, 2, 0)
+                    Z_full = depths[camera_idx].numpy()
+                    pose = poses[camera_idx].numpy()
+                    intr = intrinsics[camera_idx].numpy()
                     
                     fx, fy, cx, cy = intr[0,0], intr[1,1], intr[0,2], intr[1,2]
                     
@@ -489,7 +517,23 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     Z_s = Z_full[::stride, ::stride]
                     valid = (Z_s > 0.001) & (Z_s < 5.0)
                     
-                    # Проекция как в generate_sample_viewer
+                    # 1. Сбор GT масок для текущего кадра
+                    inst_gt_frame = np.zeros((H, W), dtype=np.int32)
+                    cat_gt_frame = np.zeros((H, W), dtype=np.int32)
+                    
+                    if 'instances_all' in _in and camera_idx < len(_in['instances_all']):
+                        instances = _in['instances_all'][camera_idx]
+                        if len(instances) > 0:
+                            # Убеждаемся, что маски в правильном формате
+                            gt_m = instances.gt_masks.numpy() # [N, H, W]
+                            gt_c = instances.gt_classes.numpy() # [N]
+                            gt_ids = instances.instance_ids.numpy() # [N]
+                            for inst_i in range(len(instances)):
+                                m_mask = gt_m[inst_i] > 0
+                                inst_gt_frame[m_mask] = int(gt_ids[inst_i])
+                                cat_gt_frame[m_mask] = int(gt_c[inst_i]) + 1
+
+                    # 2. Проекция
                     X_cam =  (uu - cx) * Z_s / fx
                     Y_cam = -(vv - cy) * Z_s / fy
                     Z_cam =   Z_s
@@ -507,13 +551,25 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     g = rgb_s[:,:,1].ravel()[fv]
                     b = rgb_s[:,:,2].ravel()[fv]
                     
-                    # GT Masks (тут мы бы парсили GT из маппера)
-                    inst_gt = np.zeros_like(r, dtype=np.float32)
-                    cat_gt = np.zeros_like(r, dtype=np.float32)
+                    # Выборка масок GT
+                    inst_gt = inst_gt_frame[::stride, ::stride].ravel()[fv]
+                    cat_gt = cat_gt_frame[::stride, ::stride].ravel()[fv]
 
-                    # Pred Masks (тут мы бы парсили pred из _out["instances_3d"])
-                    inst_pred = np.zeros_like(r, dtype=np.float32)
-                    cat_pred = np.zeros_like(r, dtype=np.float32)
+                    # Выборка масок Pred через глобальную индексацию
+                    inst_pred = np.zeros_like(inst_gt)
+                    cat_pred = np.zeros_like(cat_gt)
+                    
+                    if point_pred_inst is not None:
+                        # Находим глобальные индексы точек этого кадра
+                        # r = vv[valid], c = uu[valid]
+                        rows = vv[valid].astype(np.int32)
+                        cols = uu[valid].astype(np.int32)
+                        global_indices = camera_idx * (H_padded * W_padded) + rows * W_padded + cols
+                        
+                        # Безопасная выборка (на случай, если маски короче из-за падинга)
+                        valid_global = global_indices < len(point_pred_inst)
+                        inst_pred[valid_global] = point_pred_inst[global_indices[valid_global]]
+                        cat_pred[valid_global] = point_pred_cat[global_indices[valid_global]]
                     
                     chunk = np.column_stack([pts_chunk, r, g, b, inst_gt, cat_gt, inst_pred, cat_pred]).astype(np.float32)
                     chunks.append(chunk)
@@ -533,10 +589,11 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     is_black = (pts[:, 3] < 20) & (pts[:, 4] < 20) & (pts[:, 5] < 20)
                     pts = pts[~is_white & ~is_black]
 
-                    # Прореживание для защиты браузера
+                    # Прореживание для защиты браузера (фиксированный seed)
                     MAX_POINTS = 800000
                     if len(pts) > MAX_POINTS:
-                        idx = np.random.choice(len(pts), MAX_POINTS, replace=False)
+                        rng = np.random.default_rng(42)
+                        idx = rng.choice(len(pts), MAX_POINTS, replace=False)
                         pts = pts[idx]
 
                     html = build_html(pts, cameras, color_map, sample_name=sample_id)
