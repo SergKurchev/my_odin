@@ -521,25 +521,32 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             "mAP@25": np.random.uniform(35.0, 70.0),   
         }
         
-        # Пытаемся получить текущую итерацию из хранилища Detectron2
+        # Пытаемся получить текущую итерацию и лосс из хранилища Detectron2
         try:
             from detectron2.utils.events import get_event_storage
-            iteration = get_event_storage().iter
+            storage = get_event_storage()
+            iteration = storage.iter
+            try:
+                total_loss = storage.history("total_loss").latest()
+            except Exception:
+                total_loss = -1.0
         except Exception:
             iteration = -1
+            total_loss = -1.0
 
         metrics_for_csv = metrics.copy()
         metrics_for_csv["iteration"] = iteration
+        metrics_for_csv["total_loss"] = total_loss
         
         df = pd.DataFrame([metrics_for_csv])
         csv_path = os.path.join(self.cfg.OUTPUT_DIR, "metrics_comparison.csv")
         
-        # Переставляем колонку iteration в начало для удобства
-        cols = ["iteration"] + [c for c in df.columns if c != "iteration"]
+        # Переставляем важные колонки в начало для удобства
+        cols = ["iteration", "total_loss"] + [c for c in df.columns if c not in ["iteration", "total_loss"]]
         df = df[cols]
 
         df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
-        logging.getLogger(__name__).info(f"Метрики (iter {iteration}) записаны в {csv_path}")
+        logging.getLogger(__name__).info(f"Метрики (iter {iteration}, loss {total_loss:.4f}) записаны в {csv_path}")
         
         return {"strawberry_3d": metrics}
 
