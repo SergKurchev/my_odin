@@ -624,6 +624,26 @@ class MyTrainer(DefaultTrainer):
         dataset_len = len(DatasetCatalog.get(self.cfg.DATASETS.TRAIN[0]))
         all_hooks.append(EpochHook(dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
         
+        # Хук для остановки по времени (защита от таймаута Kaggle)
+        class TimeLimitHook(hooks.HookBase):
+            def __init__(self, max_time_hours):
+                self.max_time_seconds = max_time_hours * 3600
+                self.start_time = None
+
+            def before_train(self):
+                self.start_time = time.perf_counter()
+
+            def after_step(self):
+                elapsed = time.perf_counter() - self.start_time
+                if elapsed > self.max_time_seconds:
+                    import logging
+                    logger = logging.getLogger("odin_strawberry")
+                    logger.warning(f"!!! TIME LIMIT REACHED ({elapsed/3600:.2f}h). Stopping training gracefully... !!!")
+                    self.trainer.iter = self.trainer.max_iter # Сигнал к остановке основного цикла
+
+        max_time = getattr(self.cfg, "MAX_TIME_HOURS", 11.5)
+        all_hooks.append(TimeLimitHook(max_time))
+
         # Добавляем BestCheckpointer для сохранения лучшей модели по AP50
         from detectron2.engine.hooks import BestCheckpointer
         all_hooks.append(
@@ -767,6 +787,8 @@ def setup(args):
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE = "norm"
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 0.1 # Жесткая обрезка для стабильности
     
+    cfg.MAX_TIME_HOURS = getattr(args, "max_time", 11.5)
+    
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="odin_strawberry")
@@ -799,6 +821,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
+    parser.add_argument("--max_time", type=float, default=11.5, help="Stop training after N hours")
     
     args = parser.parse_args()
     
