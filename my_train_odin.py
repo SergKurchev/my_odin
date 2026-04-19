@@ -616,6 +616,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[i])
             matches[i] = {'gt': gt2pred, 'pred': pred2gt}
             
+        num_preds = sum(len(v['pred_classes']) for v in preds_dict.values())
+        num_gts = sum(len(v['class_labels']) for v in gts_dict.values())
+        logging.getLogger(__name__).info(f"Статистика оценки: Найдено предсказаний: {num_preds}, Всего GT инстансов: {num_gts}")
+
         # evaluate_matches возвращает кортеж из 5 массивов (has_gt, has_pred, y_true, y_score, hard_fn)
         # ВАЖНО: compute_ap принимает их в другом порядке: (has_gt, has_pred, y_score, y_true, hard_fn)
         eval_data = self.scannet_evaluator.evaluate_matches(matches)
