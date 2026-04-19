@@ -536,10 +536,13 @@ class AMPTrainerWithClipping(AMPTrainer):
     def run_step(self):
         """
         Кастомный шаг обучения с поддержкой Gradient Clipping для AMP.
-        В стандартном AMPTrainer из Detectron2 обрезка градиентов не встроена.
         """
         assert self.model.training, "[AMPTrainerWithClipping] model was not in training mode!"
+        
+        # Замеряем время загрузки данных
+        start = time.perf_counter()
         data = next(self._data_loader_iter)
+        data_time = time.perf_counter() - start
         
         # 1. Считаем потери внутри autocast
         with torch.cuda.amp.autocast():
@@ -557,14 +560,15 @@ class AMPTrainerWithClipping(AMPTrainer):
         # 3. UNSSCALE перед CLIP_GRADIENTS (это ключевой момент для AMP)
         self.grad_scaler.unscale_(self.optimizer)
         
-        # 4. Обрезаем градиенты
+        # 4. Обрезаем градиенты (Gradient Clipping)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
         
         # 5. Шагаем через scaler
         self.grad_scaler.step(self.optimizer)
         self.grad_scaler.update()
         
-        self._write_metrics(loss_dict)
+        # Передаем и лоссы, и время загрузки данных
+        self._write_metrics(loss_dict, data_time)
 
 class MyTrainer(DefaultTrainer):
     def __init__(self, cfg):
