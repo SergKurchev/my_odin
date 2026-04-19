@@ -337,9 +337,9 @@ class Scannet_Evaluator():
 
     def compute_averages(self, aps):
         d_inf = 0
-        o50   = np.where(np.isclose(opt['overlaps'],0.5))
-        o25   = np.where(np.isclose(opt['overlaps'],0.25))
-        oAllBut25  = np.where(np.logical_not(np.isclose(opt['overlaps'],0.25)))
+        o50   = np.where(np.isclose(opt['overlaps'],0.5))[0]
+        o25   = np.where(np.isclose(opt['overlaps'],0.25))[0]
+        oAllBut25  = np.where(np.logical_not(np.isclose(opt['overlaps'],0.25)))[0]
         avg_dict = {}
         #avg_dict['all_ap']     = np.nanmean(aps[ d_inf,:,:  ])
         avg_dict['all_ap']     = np.nanmean(aps[ d_inf,:,oAllBut25])
