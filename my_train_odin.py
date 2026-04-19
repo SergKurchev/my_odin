@@ -611,13 +611,17 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             gts_dict[idx] = self._parse_gt(_in)
             
         # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
-        # Scannet_Evaluator.evaluate возвращает данные для AP
         matches = {}
         for i, (k, v) in enumerate(preds_dict.items()):
             gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[i])
             matches[i] = {'gt': gt2pred, 'pred': pred2gt}
             
-        aps = self.scannet_evaluator.evaluate_matches(matches)
+        # evaluate_matches возвращает кортеж из 5 массивов (has_gt, has_pred, y_true, y_score, hard_fn)
+        # ВАЖНО: compute_ap принимает их в другом порядке: (has_gt, has_pred, y_score, y_true, hard_fn)
+        eval_data = self.scannet_evaluator.evaluate_matches(matches)
+        has_gt, has_pred, y_true, y_score, hard_fn = eval_data
+        
+        aps = self.scannet_evaluator.compute_ap(has_gt, has_pred, y_score, y_true, hard_fn)
         ap_results = self.scannet_evaluator.compute_averages(aps)
         
         # 4. Расчет PQ, SQ, RQ через наш новый метод
