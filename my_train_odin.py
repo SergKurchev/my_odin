@@ -521,10 +521,25 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             "mAP@25": np.random.uniform(35.0, 70.0),   
         }
         
-        df = pd.DataFrame([metrics])
+        # Пытаемся получить текущую итерацию из хранилища Detectron2
+        try:
+            from detectron2.utils.events import get_event_storage
+            iteration = get_event_storage().iter
+        except Exception:
+            iteration = -1
+
+        metrics_for_csv = metrics.copy()
+        metrics_for_csv["iteration"] = iteration
+        
+        df = pd.DataFrame([metrics_for_csv])
         csv_path = os.path.join(self.cfg.OUTPUT_DIR, "metrics_comparison.csv")
+        
+        # Переставляем колонку iteration в начало для удобства
+        cols = ["iteration"] + [c for c in df.columns if c != "iteration"]
+        df = df[cols]
+
         df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
-        logging.getLogger(__name__).info(f"Метрики записаны в {csv_path}")
+        logging.getLogger(__name__).info(f"Метрики (iter {iteration}) записаны в {csv_path}")
         
         return {"strawberry_3d": metrics}
 
