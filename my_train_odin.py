@@ -684,38 +684,54 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
             self.scannet_evaluator.print_results(ap_results, logging.getLogger(__name__))
 
-        # Пытаемся получить текущую итерацию и лосс из хранилища Detectron2
+        # 6. Сбор системных метрик и скорости обучения из EventStorage
+        # Используем современный подход Detectron2 без предварительной иницализации "заглушек"
+        system_metrics = {}
         try:
             storage = get_event_storage()
-            iteration = storage.iter
-            try:
-                total_loss = storage.history("total_loss").latest()
-            except Exception:
-                total_loss = -1.0
-        # Пытаемся получить метрики времени из storage если они там есть (от инференса)
-        # Если нет, просто оставим нули или пропустим
-        if len(self.inference_times) > 0:
-            avg_sec_sample = np.mean(self.inference_times)
-            metrics["perf/sec_sample"] = avg_sec_sample
-            metrics["perf/sec_frame"] = avg_sec_sample / self.cfg.INPUT.SAMPLING_FRAME_NUM
-            metrics["perf/fps"] = 1.0 / avg_sec_sample
-        else:
-            metrics["perf/sec_sample"] = 0.0
-            metrics["perf/fps"] = 0.0
+            system_metrics["iteration"] = storage.iter
+            
+            # Безопасно извлекаем историю лоссов и скорости обучения
+            histories = storage.histories()
+            if "total_loss" in histories:
+                system_metrics["total_loss"] = histories["total_loss"].latest()
+            if "perf/fps" in histories:
+                system_metrics["train/fps"] = histories["perf/fps"].median(20)
+            if "perf/sec_sample" in histories:
+                system_metrics["train/sec_sample"] = histories["perf/sec_sample"].median(20)
+        except AssertionError:
+            # EventStorage не активен (например, запуск оценки без трейнера)
+            pass
 
-        metrics_for_csv = metrics.copy()
-        metrics_for_csv["iteration"] = iteration
-        metrics_for_csv["total_loss"] = total_loss
+        # 7. Расчет метрик производительности инференса
+        if self.inference_times:
+            avg_sec_sample = np.mean(self.inference_times)
+            metrics["perf/val_sec_sample"] = avg_sec_sample
+            metrics["perf/val_sec_frame"] = avg_sec_sample / self.cfg.INPUT.SAMPLING_FRAME_NUM
+            metrics["perf/val_fps"] = 1.0 / avg_sec_sample
+
+        # Формируем итоговый словарь для CSV
+        metrics_for_csv = {**system_metrics, **metrics}
         
         df = pd.DataFrame([metrics_for_csv])
         csv_path = os.path.join(self.cfg.OUTPUT_DIR, "metrics_comparison.csv")
         
-        # Переставляем важные колонки в начало для удобства
-        cols = ["iteration", "total_loss"] + [c for c in df.columns if c not in ["iteration", "total_loss"]]
+        # Переставляем важные колонки в начало для удобства (если они есть)
+        important_cols = [
+            "iteration", "total_loss", 
+            "train/fps", "train/sec_sample", 
+            "perf/val_fps", "perf/val_sec_sample", 
+            "PQ", "mAP@50"
+        ]
+        cols = [c for c in important_cols if c in df.columns] + [c for c in df.columns if c not in important_cols]
         df = df[cols]
-
+        
         df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
-        logging.getLogger(__name__).info(f"Метрики (iter {iteration}, PQ {metrics['PQ']:.2f}, mAP@50 {metrics['mAP@50']:.2f}) записаны в {csv_path}")
+        
+        iter_str = metrics_for_csv.get("iteration", "?")
+        pq_val = metrics.get("PQ", 0.0)
+        map50_val = metrics.get("mAP@50", 0.0)
+        logging.getLogger(__name__).info(f"Метрики (iter {iter_str}, PQ {pq_val:.2f}, mAP@50 {map50_val:.2f}) записаны в {csv_path}")
         
         # Возвращаем в формате D2 для BestCheckpointer
         # Ключ должен соответствовать тому, что мы будем мониторить
@@ -954,17 +970,17 @@ class MyTrainer(DefaultTrainer):
         dataset_name = cfg.DATASETS.TRAIN[0]
         dataset_dict = DatasetCatalog.get(dataset_name)
         mapper = StrawberryDatasetMapper(cfg, is_train=True)
+        # Using the correct import for build_detection_train_loader
+        from odin.data_video.segmentation_benchmark import build_detection_train_loader
         return build_detection_train_loader(cfg, mapper=mapper, dataset=dataset_dict)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
         dataset_dict = DatasetCatalog.get(dataset_name)
         mapper = StrawberryDatasetMapper(cfg, is_train=False)
+        # Using the correct import for build_detection_test_loader
+        from odin.data_video.segmentation_benchmark import build_detection_test_loader
         return build_detection_test_loader(cfg, mapper=mapper, dataset=dataset_dict)
-
-    @classmethod
-    def build_lr_scheduler(cls, cfg, optimizer):
-        return build_lr_scheduler(cfg, optimizer)
 
     @classmethod
     def build_optimizer(cls, cfg, model):
