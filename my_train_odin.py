@@ -373,6 +373,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
     def reset(self):
         self.processed_preds = {} # Store parsed results indexed by idx
         self.processed_gts = {}   # Store parsed results indexed by idx
+        self.inference_times = []  # Store time per process call
         self.vis_data = {}        # Optional: store heavy visual data for subset of samples
         self._current_idx = 0
         
@@ -384,6 +385,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
         
         for _in, _out in zip(inputs, outputs):
+            start_t = time.perf_counter()
             idx = self._current_idx
             sample_id = str(_in.get("image_id", ""))
             
@@ -417,6 +419,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             if "images" in _in: del _in["images"]
             if "depths" in _in: del _in["depths"]
             
+            self.inference_times.append(time.perf_counter() - start_t)
             self._current_idx += 1
         
         # Force garbage collection after each batch
@@ -636,7 +639,13 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                         f.write(html)
                     logging.getLogger(__name__).info(f"HTML сохранен: {out_html_path}")
 
-        # 2. Подготовка данных для реального эвалюатора
+        # 1.1 Замер производительности инференса (уже выполнен Detectron2, но мы добавим свои метрики)
+        # Суммарное время инференса берется из системных логов, но мы посчитаем среднее по нашему набору
+        num_samples = len(self.processed_preds)
+        num_frames_per_sample = self.cfg.INPUT.SAMPLING_FRAME_NUM
+        # Мы не можем легко достать чистое время из d2.evaluation.evaluator тут, 
+        # поэтому используем средние значения из логов если нужно, или просто считаем общую длительность evaluate
+        # Однако, для точности в CSV запишем константы из последнего замера если доступно.
         preds_dict = self.processed_preds
         gts_dict = self.processed_gts
             
@@ -683,9 +692,16 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 total_loss = storage.history("total_loss").latest()
             except Exception:
                 total_loss = -1.0
-        except Exception:
-            iteration = -1
-            total_loss = -1.0
+        # Пытаемся получить метрики времени из storage если они там есть (от инференса)
+        # Если нет, просто оставим нули или пропустим
+        if len(self.inference_times) > 0:
+            avg_sec_sample = np.mean(self.inference_times)
+            metrics["perf/sec_sample"] = avg_sec_sample
+            metrics["perf/sec_frame"] = avg_sec_sample / self.cfg.INPUT.SAMPLING_FRAME_NUM
+            metrics["perf/fps"] = 1.0 / avg_sec_sample
+        else:
+            metrics["perf/sec_sample"] = 0.0
+            metrics["perf/fps"] = 0.0
 
         metrics_for_csv = metrics.copy()
         metrics_for_csv["iteration"] = iteration
@@ -711,6 +727,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
 # 4. Trainer Override
 # -------------------------------------------------------------------------
 class AMPTrainerWithClipping(AMPTrainer):
+    def __init__(self, model, data_loader, optimizer, num_frames=1):
+        super().__init__(model, data_loader, optimizer)
+        self.num_frames = num_frames
+
     def run_step(self):
         """
         Кастомный шаг обучения с поддержкой Gradient Clipping для AMP.
@@ -747,6 +767,13 @@ class AMPTrainerWithClipping(AMPTrainer):
         
         # Передаем и лоссы, и время загрузки данных
         self._write_metrics(loss_dict, data_time)
+        
+        # Дополнительные метрики производительности (Sample = 1 Sequence)
+        storage = get_event_storage()
+        sec_per_sample = time.perf_counter() - start
+        storage.put_scalar("perf/sec_sample", sec_per_sample)
+        storage.put_scalar("perf/sec_frame", sec_per_sample / self.num_frames)
+        storage.put_scalar("perf/fps", 1.0 / sec_per_sample)
 
 class MyTrainer(DefaultTrainer):
     def __init__(self, cfg):
@@ -767,8 +794,10 @@ class MyTrainer(DefaultTrainer):
         
         # Используем наш кастомный трейнер с обрезкой градиентов
         if cfg.SOLVER.AMP.ENABLED:
-            self._trainer = AMPTrainerWithClipping(model, data_loader, optimizer)
+            self._trainer = AMPTrainerWithClipping(model, data_loader, optimizer, num_frames=cfg.INPUT.SAMPLING_FRAME_NUM)
         else:
+            # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится, 
+            # но сейчас используем только AMP
             self._trainer = SimpleTrainer(model, data_loader, optimizer)
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
