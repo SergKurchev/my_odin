@@ -1,4 +1,5 @@
 import gc
+import re
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -820,6 +821,55 @@ class MyTrainer(DefaultTrainer):
 
         max_time = getattr(self.cfg, "MAX_TIME_HOURS", 11.5)
         all_hooks.append(TimeLimitHook(max_time))
+
+        # Хук для очистки старых чекпоинтов (защита от переполнения диска Kaggle)
+        class CheckpointCleanupHook(hooks.HookBase):
+            def __init__(self, output_dir, checkpoint_period, keep_last=2):
+                self.output_dir = output_dir
+                self.checkpoint_period = checkpoint_period
+                self.keep_last = keep_last
+
+            def after_step(self):
+                # Проверяем сразу после того, как PeriodicCheckpointer мог сохранить файл
+                # Мы делаем это чуть позже, чтобы файл успел записаться
+                if (self.trainer.iter + 1) % self.checkpoint_period == 0:
+                    self._cleanup()
+
+            def _cleanup(self):
+                import os
+                import re
+                logger = logging.getLogger("odin_strawberry")
+                files = [f for f in os.listdir(self.output_dir) if f.endswith(".pth")]
+                
+                # Ищем файлы вида model_0001234.pth (исключаем model_best.pth и model_final.pth)
+                checkpoint_pattern = re.compile(r"^model_(\d+)\.pth$")
+                
+                checkpoints = []
+                for f in files:
+                    match = checkpoint_pattern.match(f)
+                    if match:
+                        iteration = int(match.group(1))
+                        checkpoints.append((iteration, f))
+                
+                if len(checkpoints) <= self.keep_last:
+                    return
+                    
+                # Сортируем по итерации (старые в начале)
+                checkpoints.sort(key=lambda x: x[0])
+                
+                # Оставляем только последние keep_last
+                to_delete = checkpoints[:-self.keep_last]
+                
+                for iteration, filename in to_delete:
+                    file_path = os.path.join(self.output_dir, filename)
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            logger.info(f"--- [CLEANUP] Удален старый чекпоинт: {filename} ---")
+                    except Exception as e:
+                        logger.warning(f"--- [CLEANUP] Ошибка при удалении {filename}: {e} ---")
+
+        all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, self.cfg.SOLVER.CHECKPOINT_PERIOD, keep_last=2))
 
         # Добавляем BestCheckpointer для сохранения лучшей модели по PQ (согласно протоколу)
         from detectron2.engine.hooks import BestCheckpointer
