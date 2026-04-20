@@ -1,3 +1,4 @@
+import gc
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -369,18 +370,56 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         os.makedirs(self._output_dir, exist_ok=True)
         
     def reset(self):
-        self.predictions = []
-        self.ground_truths = []
+        self.processed_preds = {} # Store parsed results indexed by idx
+        self.processed_gts = {}   # Store parsed results indexed by idx
+        self.vis_data = {}        # Optional: store heavy visual data for subset of samples
+        self._current_idx = 0
         
     def process(self, inputs, outputs):
         """
         inputs: List of dataset dicts
         outputs: List of model outputs
         """
+        target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
+        
         for _in, _out in zip(inputs, outputs):
-            # Сохраняем как есть, парсинг сделаем в evaluate для удобства отладки
-            self.predictions.append(_out)
-            self.ground_truths.append(_in)
+            idx = self._current_idx
+            sample_id = str(_in.get("image_id", ""))
+            
+            # 1. Parse and store ground truth (3D masks/labels)
+            # This is much lighter than the full _in (RGB, Depth, Large XYZ tensors)
+            self.processed_gts[idx] = self._parse_gt(_in)
+            
+            # 2. Parse and store prediction
+            self.processed_preds[idx] = self._parse_pred(_out)
+            
+            # 3. Check if we need visualization for this sample
+            is_target = any(ts in sample_id for ts in target_samples)
+            if is_target:
+                # Store only the minimum data needed for build_html (ON CPU)
+                # We copy and move to CPU to ensure no references to GPU-heavy objects
+                self.vis_data[idx] = {
+                    "image_id": sample_id,
+                    "images": [img.cpu() for img in _in.get("images", [])],
+                    "depths": [d.cpu() for d in _in.get("depths", [])],
+                    "poses": [p.cpu() for p in _in.get("poses", [])],
+                    "intrinsics": [i.cpu() for i in _in.get("intrinsics", [])],
+                    "color_map": copy.deepcopy(_in.get("color_map", {})),
+                    "instances_all": copy.deepcopy(_in.get("instances_all", [])) # 2D masks for visualization
+                }
+            
+            # 4. CRITICAL: Explicitly release references to large tensors in inputs
+            # To help garbage collection between batches
+            if "multi_scale_xyz" in _in: del _in["multi_scale_xyz"]
+            if "multi_scale_p2v" in _in: del _in["multi_scale_p2v"]
+            if "original_xyz" in _in: del _in["original_xyz"]
+            if "images" in _in: del _in["images"]
+            if "depths" in _in: del _in["depths"]
+            
+            self._current_idx += 1
+        
+        # Force garbage collection after each batch
+        gc.collect()
 
     def _parse_gt(self, _in):
         h, w = _in['instances_all'][0].image_size
@@ -412,6 +451,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
     def evaluate(self):
         logging.getLogger(__name__).info("Evaluating 3D Instance metrics (Strawberry) on full validation set...")
         
+        # Free up some memory before processing
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         # 1. Точная выгрузка визуализаций по правилам `generate_sample_viewer.py`
         import sys
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -421,11 +464,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             logging.getLogger(__name__).warning("Не удалось импортировать build_html из generate_sample_viewer.py!")
             build_html = None
 
-        if build_html is not None:
+        if build_html is not None and len(self.vis_data) > 0:
             vis_output_dir = os.path.join(self._output_dir, "visualizations")
             os.makedirs(vis_output_dir, exist_ok=True)
-
-            target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
 
             def rotmat_to_quat(R):
                 trace = np.trace(R)
@@ -455,11 +496,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     qz = 0.25 * s
                 return [float(qx), float(qy), float(qz), float(qw)]
 
-            for _in, _out in zip(self.ground_truths, self.predictions):
-                sample_id = str(_in.get("image_id", ""))
-                
-                if not any(ts in sample_id for ts in target_samples):
-                    continue
+            for idx in self.vis_data:
+                v_data = self.vis_data[idx]
+                sample_id = v_data["image_id"]
                 
                 logging.getLogger(__name__).info(f"Генерация HTML визуализации для {sample_id}...")
                 
@@ -468,7 +507,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 stride = 2
                 
                 # Подготовка предсказаний для быстрого доступа
-                pred_data = _out.get("instances_3d", {})
+                pred_data = self.processed_preds[idx]
                 pred_masks = pred_data.get("pred_masks") # [NumInstances, NumPoints]
                 pred_classes = pred_data.get("pred_classes") # [NumInstances]
                 
@@ -483,17 +522,17 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     point_pred_inst = np.zeros(num_pts_total, dtype=np.int32)
                     point_pred_cat = np.zeros(num_pts_total, dtype=np.int32)
                     
-                    # Если маски перекрываются, побеждает последняя (или с высшим скором, но тут упростим)
+                    # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
                         point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза
                         point_pred_cat[m] = int(pred_classes[inst_idx]) + 1 # 1-indexed
 
-                images = _in.get("images", [])
-                depths = _in.get("depths", [])
-                poses = _in.get("poses", [])
-                intrinsics = _in.get("intrinsics", [])
-                color_map = _in.get("color_map", {})
+                images = v_data.get("images", [])
+                depths = v_data.get("depths", [])
+                poses = v_data.get("poses", [])
+                intrinsics = v_data.get("intrinsics", [])
+                color_map = v_data.get("color_map", {})
                 
                 # Рассчитываем padding как в маппере для правильной глобальной индексации
                 H_orig, W_orig = images[0].shape[1:]
@@ -521,10 +560,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     inst_gt_frame = np.zeros((H, W), dtype=np.int32)
                     cat_gt_frame = np.zeros((H, W), dtype=np.int32)
                     
-                    if 'instances_all' in _in and camera_idx < len(_in['instances_all']):
-                        instances = _in['instances_all'][camera_idx]
+                    if 'instances_all' in v_data and camera_idx < len(v_data['instances_all']):
+                        instances = v_data['instances_all'][camera_idx]
                         if len(instances) > 0:
-                            # Убеждаемся, что маски в правильном формате
                             gt_m = instances.gt_masks.numpy() # [N, H, W]
                             gt_c = instances.gt_classes.numpy() # [N]
                             gt_ids = instances.instance_ids.numpy() # [N]
@@ -560,13 +598,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     cat_pred = np.zeros_like(cat_gt)
                     
                     if point_pred_inst is not None:
-                        # Находим глобальные индексы точек этого кадра
-                        # r = vv[valid], c = uu[valid]
                         rows = vv[valid].astype(np.int32)
                         cols = uu[valid].astype(np.int32)
                         global_indices = camera_idx * (H_padded * W_padded) + rows * W_padded + cols
                         
-                        # Безопасная выборка (на случай, если маски короче из-за падинга)
                         valid_global = global_indices < len(point_pred_inst)
                         inst_pred[valid_global] = point_pred_inst[global_indices[valid_global]]
                         cat_pred[valid_global] = point_pred_cat[global_indices[valid_global]]
@@ -578,18 +613,16 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                         "position": t_vec.tolist(),
                         "rotation": rotmat_to_quat(R_mat),
                         "intrinsics": {"fx": float(fx), "fy": float(fy), "cx": float(cx), "cy": float(cy)},
-                        "frame_index": i
+                        "frame_index": camera_idx
                     }
                     cameras.append(cam_dict)
                 
                 if len(chunks) > 0:
                     pts = np.concatenate(chunks, axis=0)
-                    # Фильтрация `plant` как в оригинале (убираем стену и пол)
                     is_white = (pts[:, 3] > 220) & (pts[:, 4] > 220) & (pts[:, 5] > 220)
                     is_black = (pts[:, 3] < 20) & (pts[:, 4] < 20) & (pts[:, 5] < 20)
                     pts = pts[~is_white & ~is_black]
 
-                    # Прореживание для защиты браузера (фиксированный seed)
                     MAX_POINTS = 800000
                     if len(pts) > MAX_POINTS:
                         rng = np.random.default_rng(42)
@@ -603,12 +636,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     logging.getLogger(__name__).info(f"HTML сохранен: {out_html_path}")
 
         # 2. Подготовка данных для реального эвалюатора
-        preds_dict = {}
-        gts_dict = {}
-        
-        for idx, (_in, _out) in enumerate(zip(self.ground_truths, self.predictions)):
-            preds_dict[idx] = self._parse_pred(_out)
-            gts_dict[idx] = self._parse_gt(_in)
+        preds_dict = self.processed_preds
+        gts_dict = self.processed_gts
             
         # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
         matches = {}
