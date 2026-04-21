@@ -32,7 +32,7 @@ from detectron2.engine import (
     SimpleTrainer,
     hooks
 )
-from detectron2.data import DatasetCatalog, MetadataCatalog, build_detection_test_loader, build_detection_train_loader
+from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.evaluation import DatasetEvaluator, inference_on_dataset
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
@@ -970,16 +970,12 @@ class MyTrainer(DefaultTrainer):
         dataset_name = cfg.DATASETS.TRAIN[0]
         dataset_dict = DatasetCatalog.get(dataset_name)
         mapper = StrawberryDatasetMapper(cfg, is_train=True)
-        # Using the correct import for build_detection_train_loader
-        from odin.data_video.segmentation_benchmark import build_detection_train_loader
         return build_detection_train_loader(cfg, mapper=mapper, dataset=dataset_dict)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
         dataset_dict = DatasetCatalog.get(dataset_name)
         mapper = StrawberryDatasetMapper(cfg, is_train=False)
-        # Using the correct import for build_detection_test_loader
-        from odin.data_video.segmentation_benchmark import build_detection_test_loader
         return build_detection_test_loader(cfg, mapper=mapper, dataset=dataset_dict)
 
     @classmethod
