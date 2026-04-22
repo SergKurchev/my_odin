@@ -5,6 +5,12 @@
 
 #%% [code]
 import os
+import shutil
+# Чистим старое окружение перед запуском (запрос пользователя)
+if os.path.exists("venv"):
+    print("Cleaning up old venv...")
+    shutil.rmtree("venv")
+
 import subprocess
 import sys
 import urllib.request
