@@ -1027,7 +1027,9 @@ def setup(args):
     steps_per_epoch = dataset_len // args.batch_size
     if args.num_epochs > 0:
         cfg.SOLVER.MAX_ITER = int(args.num_epochs * steps_per_epoch)
-        print(f"Calculated MAX_ITER: {cfg.SOLVER.MAX_ITER} for {args.num_epochs} epochs")
+        # Автоматически ставим шаги затухания LR (на 70% и 90% пути)
+        cfg.SOLVER.STEPS = (int(cfg.SOLVER.MAX_ITER * 0.7), int(cfg.SOLVER.MAX_ITER * 0.9))
+        print(f"Calculated MAX_ITER: {cfg.SOLVER.MAX_ITER}, STEPS: {cfg.SOLVER.STEPS}")
     else:
         cfg.SOLVER.MAX_ITER = args.max_iter
 
