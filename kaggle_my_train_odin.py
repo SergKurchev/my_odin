@@ -311,15 +311,32 @@ train_cmd = [
     VENV_PYTHON, "my_odin/my_train_odin.py",
     "--config-file", CONFIG_FILE,
     "--num-gpus", "1",
+    "--dist-url", "tcp://127.0.0.1:23456",
+    "--resume",                # Автоматически продолжит с последнего чекпоинта в OUTPUT_DIR
+    "--visualize",             # Генерация HTML-визуализаций для проверочных сэмплов
     "--dataset_dir", DATASET_DIR,
     "--splits_file", SPLITS_FILE,
-    # Если хотим использовать веса ResNet (закомментировано)
-    # "MODEL.WEIGHTS", "detectron2://ImageNetPretrained/torchvision/R-50.pkl", 
-    # Если хотим использовать готовые веса (раскомментировано)
+    
+    # ПАРАМЕТРЫ ОБУЧЕНИЯ
+    "--num_epochs", "10",      # Общее кол-во эпох
+    "--eval_period", "144",     # Валидация каждую эпоху (если в эпохе ~144 итерации)
+    "--checkpoint_period", "144", # Сохранение чекпоинта каждую эпоху
+    
+    # ОГРАНИЧЕНИЕ ВРЕМЕНИ (ВАЖНО ДЛЯ KAGGLE)
+    "--max_time", "6",       # Авто-остановка через 6 часов (чтобы успеть сохранить веса)
+    
+    # ПАРАМЕТРЫ РЕСУРСОВ (Memory optimization)
+    "--image_size", "640",    
+    "--batch_size", "1",
+    "--num_frames", "5",        # 5 кадров при 640px могут потребовать много VRAM
+    "--lr", "0.0001",
+    
+    # ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ (Config Overrides)
+    # Важно: эти параметры БЕЗ черточек должны идти в самом конце списка
     "MODEL.WEIGHTS", CONFIG["ODIN_WEIGHTS_PATH"],
     "OUTPUT_DIR", "./output",
-    # Явно задаем порт, чтобы избежать подвисаний DDP в фоновом режиме
-    "--dist-url", "tcp://127.0.0.1:23456"
+    "SOLVER.AMP.ENABLED", "True",
+    "MODEL.MASK_FORMER.DEC_LAYERS", "4",
 ]
 
 print("Starting training script...")

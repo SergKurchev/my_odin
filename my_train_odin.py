@@ -992,7 +992,23 @@ def setup(args):
     add_maskformer2_video_config(cfg)
     if args.config_file:
         cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
+    
+    # Defensive check: filter out flags that slipped into opts due to incorrect order
+    clean_opts = []
+    i = 0
+    while i < len(args.opts):
+        key = args.opts[i]
+        if key.startswith("--"):
+            # This is a flag, skip it and its potential value
+            print(f"Warning: Found flag {key} in config overrides (opts). Removing it to avoid YACS error.")
+            i += 1
+            if i < len(args.opts) and not args.opts[i].startswith("--") and "." not in args.opts[i]:
+                i += 1
+            continue
+        clean_opts.append(key)
+        i += 1
+        
+    cfg.merge_from_list(clean_opts)
     
     # Defaults for Strawberry ODIN execution
     dataset_dir = args.dataset_dir
