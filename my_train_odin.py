@@ -939,10 +939,10 @@ class MyTrainer(DefaultTrainer):
         """
         from detectron2.solver import build_lr_scheduler
         
-        # Увеличиваем Warmup до 500 шагов и добавляем фактор (0.1% от LR в начале)
+        # Увеличиваем Warmup до 1500 шагов для мягкого рестарта (итерация сейчас ~1150)
         cfg.defrost()
-        cfg.SOLVER.WARMUP_ITERS = 500
-        cfg.SOLVER.WARMUP_FACTOR = 0.001
+        cfg.SOLVER.WARMUP_ITERS = 1500
+        cfg.SOLVER.WARMUP_FACTOR = 0.01
         cfg.freeze()
         
         return build_lr_scheduler(cfg, optimizer)

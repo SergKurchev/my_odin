@@ -305,6 +305,37 @@ if os.path.exists(SPLITS_FILE):
             print(f"  Пробую путь '{p3}': {'✓' if p3.exists() else '✗'}")
 
 #%% [code]
+import shutil
+
+def sync_previous_output():
+    """
+    Автоматически ищет папку output в подключенных входных данных (Kaggle Notebook Output)
+    и копирует её в текущую рабочую директорию, чтобы --resume мог подхватить веса.
+    """
+    input_base = "/kaggle/input"
+    target_output = "./output"
+    
+    if not os.path.exists(input_base):
+        return
+
+    # Ищем любую папку, внутри которой есть файлы .pth
+    for root, dirs, files in os.walk(input_base):
+        if "output" in root and any(f.endswith(".pth") for f in files):
+            print(f"Нашел старые чекпоинты в: {root}")
+            if not os.path.exists(target_output):
+                os.makedirs(target_output)
+            
+            for f in files:
+                src = os.path.join(root, f)
+                dst = os.path.join(target_output, f)
+                if not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+            print(f"Успешно скопировал {len(files)} файлов в {target_output}")
+            return
+
+# Перед формированием команды синхронизируем данные
+sync_previous_output()
+
 CONFIG_FILE = "my_odin/configs/scannet_context/3d.yaml"
 
 train_cmd = [
