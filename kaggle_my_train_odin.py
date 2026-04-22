@@ -163,6 +163,8 @@ def install_odin_dependencies():
     # 5. ODIN requirements + ninja, fvcore, iopath
     print("\n5. Installing ODIN requirements...")
     run_in_venv(["pip", "install", "-q", "-r", req_path], env=venv_env)
+    # Фикс: откатываем transformers до версии, совместимой с Torch 2.2.0, чтобы не было ошибки "PyTorch not found"
+    run_in_venv(["pip", "install", "-q", "transformers==4.38.2"], env=venv_env)
     run_in_venv(["pip", "install", "-q", "ninja", "fvcore", "iopath"], env=venv_env)
 
     # 6. Detectron2
@@ -309,11 +311,15 @@ train_cmd = [
     # "MODEL.WEIGHTS", "detectron2://ImageNetPretrained/torchvision/R-50.pkl", 
     # Если хотим использовать готовые веса (раскомментировано)
     "MODEL.WEIGHTS", CONFIG["ODIN_WEIGHTS_PATH"],
-    "OUTPUT_DIR", "./output"
+    "OUTPUT_DIR", "./output",
+    # Явно задаем порт, чтобы избежать подвисаний DDP в фоновом режиме
+    "--dist-url", "tcp://127.0.0.1:23456"
 ]
 
 print("Starting training script...")
-subprocess.run(train_cmd, check=True)
+# Используем run_in_venv с пробросом venv_env, чтобы окружение было полностью корректным
+venv_env = make_venv_env()
+run_in_venv(train_cmd, env=venv_env)
 
 #%% [markdown]
 # Вывод результатов (метрики) сохраняется в `output/metrics_comparison.csv`
