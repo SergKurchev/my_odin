@@ -375,6 +375,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self.processed_gts = {}   # Store parsed results indexed by idx
         self.inference_times = []  # Store time per process call
         self.vis_data = {}        # Optional: store heavy visual data for subset of samples
+        self.total_frames = 0     # Track total frames for accurate speed metrics
         self._current_idx = 0
         
     def process(self, inputs, outputs):
@@ -420,6 +421,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             if "depths" in _in: del _in["depths"]
             
             self.inference_times.append(time.perf_counter() - start_t)
+            self.total_frames += len(_in.get("images", []))
             self._current_idx += 1
         
         # Force garbage collection after each batch
@@ -704,11 +706,12 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             pass
 
         # 7. Расчет метрик производительности инференса
-        if self.inference_times:
-            avg_sec_sample = np.mean(self.inference_times)
+        if self.inference_times and self.total_frames > 0:
+            total_time = sum(self.inference_times)
+            avg_sec_sample = total_time / len(self.inference_times)
             metrics["perf/val_sec_sample"] = avg_sec_sample
-            metrics["perf/val_sec_frame"] = avg_sec_sample / self.cfg.INPUT.SAMPLING_FRAME_NUM
-            metrics["perf/val_fps"] = 1.0 / avg_sec_sample
+            metrics["perf/val_sec_frame"] = total_time / self.total_frames
+            metrics["perf/val_fps"] = self.total_frames / total_time
 
         # Формируем итоговый словарь для CSV
         metrics_for_csv = {**system_metrics, **metrics}
