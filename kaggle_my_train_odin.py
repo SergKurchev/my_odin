@@ -337,6 +337,11 @@ train_cmd = [
     "OUTPUT_DIR", "./output",
     "SOLVER.AMP.ENABLED", "True",
     "MODEL.MASK_FORMER.DEC_LAYERS", "4",
+    
+    # Исправление несовпадения весов предобученной модели (ScanNet -> Strawberry)
+    "MODEL.MASK_FORMER.NUM_OBJECT_QUERIES", "100", # Соответствует весам в чекпоинте (было 20)
+    "USE_MLP_POSITIONAL_ENCODING", "True",         # Соответствует Linear слою в чекпоинте (было Conv1d)
+    "SOLVER.STEPS", "[]",                          # Убираем предупреждение о шагах обучения
 ]
 
 print("Starting training script...")
