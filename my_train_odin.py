@@ -709,12 +709,17 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         if self.inference_times and self.total_frames > 0:
             total_time = sum(self.inference_times)
             avg_sec_sample = total_time / len(self.inference_times)
-            metrics["perf/val_sec_sample"] = avg_sec_sample
-            metrics["perf/val_sec_frame"] = total_time / self.total_frames
-            metrics["perf/val_fps"] = self.total_frames / total_time
+            metrics["eval/sec_sample"] = avg_sec_sample
+            metrics["eval/fps"] = self.total_frames / total_time
+            # Keep old names for compatibility if needed
+            metrics["perf/val_sec_sample"] = metrics["eval/sec_sample"]
+            metrics["perf/val_fps"] = metrics["eval/fps"]
 
         # Формируем итоговый словарь для CSV
         metrics_for_csv = {**system_metrics, **metrics}
+        
+        # 8. Очистка старых визуализаций (храним первые 5 и последние 10)
+        self._cleanup_visualizations()
         
         df = pd.DataFrame([metrics_for_csv])
         csv_path = os.path.join(self.cfg.OUTPUT_DIR, "metrics_comparison.csv")
@@ -723,7 +728,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         important_cols = [
             "iteration", "total_loss", 
             "train/fps", "train/sec_sample", 
-            "perf/val_fps", "perf/val_sec_sample", 
+            "eval/fps", "eval/sec_sample", 
             "PQ", "mAP@50"
         ]
         cols = [c for c in important_cols if c in df.columns] + [c for c in df.columns if c not in important_cols]
@@ -740,6 +745,36 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # Ключ должен соответствовать тому, что мы будем мониторить
         res = {f"strawberry_3d/{k}": v for k, v in metrics.items()}
         return res
+
+    def _cleanup_visualizations(self):
+        """
+        Удаляет старые папки визуализаций, оставляя первые 5 и последние 10.
+        Защищает диск Kaggle от переполнения.
+        """
+        import shutil
+        vis_root = os.path.join(self.cfg.VISUALIZE_LOG_DIR)
+        if not os.path.exists(vis_root):
+            return
+            
+        # Папки вида iter_000000
+        dirs = [d for d in os.listdir(vis_root) if os.path.isdir(os.path.join(vis_root, d)) and d.startswith("iter_")]
+        if len(dirs) <= 15: # 5 + 10
+            return
+            
+        dirs.sort() # Сортировка по итерациям
+        
+        # Оставляем первые 5 и последние 10
+        to_keep = set(dirs[:5]) | set(dirs[-10:])
+        to_delete = [d for d in dirs if d not in to_keep]
+        
+        logger = logging.getLogger("odin_strawberry")
+        for d in to_delete:
+            path = os.path.join(vis_root, d)
+            try:
+                shutil.rmtree(path)
+                logger.info(f"--- [CLEANUP] Удалена старая визуализация: {d} ---")
+            except Exception as e:
+                logger.warning(f"--- [CLEANUP] Ошибка при удалении папки {d}: {e} ---")
 
 
 # -------------------------------------------------------------------------
@@ -870,23 +905,27 @@ class MyTrainer(DefaultTrainer):
         max_time = getattr(self.cfg, "MAX_TIME_HOURS", 11.5)
         all_hooks.append(TimeLimitHook(max_time))
 
-        # Хук для очистки старых чекпоинтов (защита от переполнения диска Kaggle)
         class CheckpointCleanupHook(hooks.HookBase):
-            def __init__(self, output_dir, checkpoint_period, keep_last=2):
+            def __init__(self, output_dir, keep_last=2):
                 self.output_dir = output_dir
-                self.checkpoint_period = checkpoint_period
                 self.keep_last = keep_last
 
+            def before_train(self):
+                # Очищаем сразу при старте (на случай если остались файлы от прошлого падения)
+                self._cleanup()
+
             def after_step(self):
-                # Проверяем сразу после того, как PeriodicCheckpointer мог сохранить файл
-                # Мы делаем это чуть позже, чтобы файл успел записаться
-                if (self.trainer.iter + 1) % self.checkpoint_period == 0:
+                # Проверяем на каждом шаге, так как PeriodicCheckpointer может сработать
+                # Но реально удаляем только если появились новые файлы
+                if (self.trainer.iter + 1) % 10 == 0: # Проверяем каждые 10 шагов для надежности
                     self._cleanup()
 
             def _cleanup(self):
                 import os
                 import re
                 logger = logging.getLogger("odin_strawberry")
+                if not os.path.exists(self.output_dir):
+                    return
                 files = [f for f in os.listdir(self.output_dir) if f.endswith(".pth")]
                 
                 # Ищем файлы вида model_0001234.pth (исключаем model_best.pth и model_final.pth)
@@ -913,11 +952,11 @@ class MyTrainer(DefaultTrainer):
                     try:
                         if os.path.exists(file_path):
                             os.remove(file_path)
-                            logger.info(f"--- [CLEANUP] Удален старый чекпоинт: {filename} ---")
+                            logger.info(f"--- [CLEANUP] Удален старый чекпоинт: {filename} (Disk Space protection) ---")
                     except Exception as e:
                         logger.warning(f"--- [CLEANUP] Ошибка при удалении {filename}: {e} ---")
 
-        all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, self.cfg.SOLVER.CHECKPOINT_PERIOD, keep_last=2))
+        all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, keep_last=2))
 
         # Добавляем BestCheckpointer для сохранения лучшей модели по PQ (согласно протоколу)
         from detectron2.engine.hooks import BestCheckpointer
