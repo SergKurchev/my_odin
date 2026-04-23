@@ -244,3 +244,6 @@ def add_maskformer2_video_config(cfg):
     cfg.DISABLE_SHUFFLE = True
     cfg.RANDOM_SELECT_CLASSES = False
     cfg.TEXT_ENCODER_TYPE = "roberta"
+    
+    # Bayesian Inference
+    cfg.MODEL.BAYESIAN_SAMPLES = 1 # Number of MC samples for probability estimation

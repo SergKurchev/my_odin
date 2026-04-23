@@ -180,6 +180,7 @@ class ODINMultiScaleMaskedTransformerDecoder(nn.Module):
 
         # output FFNs
         if self.mask_classification and not self.cfg.MODEL.OPEN_VOCAB:
+            self.class_dropout = nn.Dropout(p=0.1) # Bayesian MC Dropout
             self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
@@ -478,7 +479,9 @@ class ODINMultiScaleMaskedTransformerDecoder(nn.Module):
                 decoder_output, text_feats, positive_map_od, num_classes)
 
         else:
-            outputs_class = self.class_embed(decoder_output)
+            # Применяем MC Dropout для байесовской оценки
+            dropped_output = F.dropout(decoder_output, p=0.1, training=True)
+            outputs_class = self.class_embed(dropped_output)
         mask_embed = self.mask_embed(decoder_output)
 
         if self.cfg.USE_SEGMENTS:
@@ -524,7 +527,9 @@ class ODINMultiScaleMaskedTransformerDecoder(nn.Module):
             outputs_class = self.open_vocab_class_pred(
                 decoder_output, text_feats, positive_map_od, num_classes)
         else:
-            outputs_class = self.class_embed(decoder_output)
+            # Применяем MC Dropout для байесовской оценки
+            dropped_output = F.dropout(decoder_output, p=0.1, training=True)
+            outputs_class = self.class_embed(dropped_output)
             
         mask_embed = self.mask_embed(decoder_output)
         outputs_mask = torch.einsum("bqc,btchw->bqthw", mask_embed, mask_features)

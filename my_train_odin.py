@@ -1038,6 +1038,13 @@ def setup(args):
         cfg.SOLVER.MAX_ITER = args.max_iter
 
     # Настройка периодов (Eval и Checkpoint)
+    cfg.TEST.EVAL_PERIOD = args.eval_period
+    cfg.CHECKPOINT_PERIOD = args.checkpoint_period
+    
+    # Bayesian Inference Samples
+    # Мы можем передавать это через opts, но для удобства добавим и сюда
+    if hasattr(args, "bayesian_samples"):
+        cfg.MODEL.BAYESIAN_SAMPLES = args.bayesian_samples
     if args.eval_period == 0:
         eval_period = steps_per_epoch * 2 # Каждые 2 эпохи по умолчанию
     else:
@@ -1111,6 +1118,8 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
+    parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
+    parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")
     parser.add_argument("--max_time", type=float, default=11.5, help="Stop training after N hours")
     
     args = parser.parse_args()

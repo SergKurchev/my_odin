@@ -364,10 +364,11 @@ train_cmd = [
     
     # ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ (Config Overrides)
     # Важно: эти параметры БЕЗ черточек должны идти в самом конце списка
-    "MODEL.WEIGHTS", CONFIG["ODIN_WEIGHTS_PATH"],
-    "OUTPUT_DIR", "./output",
-    "SOLVER.AMP.ENABLED", "True",
-    "MODEL.MASK_FORMER.DEC_LAYERS", "4",
+    'MODEL.WEIGHTS', CONFIG["ODIN_WEIGHTS_PATH"],
+    'OUTPUT_DIR', './output',
+    'SOLVER.AMP.ENABLED', 'True',
+    'MODEL.MASK_FORMER.DEC_LAYERS', '4',
+    'MODEL.BAYESIAN_SAMPLES', '5', # Включаем байесовскую оценку (5 сэмплов)
 ]
 
 print("Starting training script...")

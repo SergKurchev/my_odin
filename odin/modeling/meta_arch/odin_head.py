@@ -198,19 +198,66 @@ class ODINHead(nn.Module):
         # Feed to Transformer decoder
         if shape is None:
             shape = [multi_scale_features[0].shape[0], 1]
-        predictions = self.predictor(
-            x=multi_scale_features,
-            mask_features=mask_features,
-            shape = shape[:2],
-            x_xyz=multi_scale_xyz,
-            mask=mask,
-            mask_features_xyz=mask_features_xyz, 
-            multiview_data=multiview_data, 
-            segments=segments,
-            scannet_p2v=scannet_p2v,
-            decoder_3d=decoder_3d,
-            captions=captions,
-            positive_map_od=positive_map_od,
-            num_classes=num_classes
-        )
+            
+        # Bayesian Inference: Monte Carlo Sampling
+        num_samples = getattr(self.cfg.MODEL, "BAYESIAN_SAMPLES", 1)
+        
+        if not self.training and num_samples > 1:
+            all_outputs = []
+            for _ in range(num_samples):
+                out = self.predictor(
+                    x=multi_scale_features,
+                    mask_features=mask_features,
+                    shape = shape[:2],
+                    x_xyz=multi_scale_xyz,
+                    mask=mask,
+                    mask_features_xyz=mask_features_xyz, 
+                    multiview_data=multiview_data, 
+                    segments=segments,
+                    scannet_p2v=scannet_p2v,
+                    decoder_3d=decoder_3d,
+                    captions=captions,
+                    positive_map_od=positive_map_od,
+                    num_classes=num_classes
+                )
+                all_outputs.append(out)
+            
+            # Усредняем вероятности (Softmax) для байесовской оценки
+            # Мы усредняем результаты только для финального предсказания
+            predictions = all_outputs[0] # Берем структуру и маски из первого прохода (они детерминированы)
+            
+            # Собираем логиты со всех проходов
+            logits_stack = torch.stack([o['pred_logits'] for o in all_outputs]) # [S, B, Q, C]
+            
+            # Вычисляем среднюю вероятность
+            avg_probs = torch.softmax(logits_stack, dim=-1).mean(dim=0)
+            
+            # Переводим обратно в "байесовские логиты" для совместимости с остальным кодом
+            # Мы используем log(probs + eps) для имитации логитов
+            predictions['pred_logits'] = torch.log(avg_probs + 1e-8)
+            
+            # Аналогично для вспомогательных выходов (aux_outputs), если они есть
+            if "aux_outputs" in predictions:
+                for i in range(len(predictions["aux_outputs"])):
+                    aux_logits_stack = torch.stack([o["aux_outputs"][i]["pred_logits"] for o in all_outputs])
+                    avg_aux_probs = torch.softmax(aux_logits_stack, dim=-1).mean(dim=0)
+                    predictions["aux_outputs"][i]["pred_logits"] = torch.log(avg_aux_probs + 1e-8)
+        else:
+            # Обычный детерминированный проход (или 1 сэмпл Dropout)
+            predictions = self.predictor(
+                x=multi_scale_features,
+                mask_features=mask_features,
+                shape = shape[:2],
+                x_xyz=multi_scale_xyz,
+                mask=mask,
+                mask_features_xyz=mask_features_xyz, 
+                multiview_data=multiview_data, 
+                segments=segments,
+                scannet_p2v=scannet_p2v,
+                decoder_3d=decoder_3d,
+                captions=captions,
+                positive_map_od=positive_map_od,
+                num_classes=num_classes
+            )
+            
         return predictions
