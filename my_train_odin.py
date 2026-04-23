@@ -898,9 +898,20 @@ class MyTrainer(DefaultTrainer):
                 elapsed = time.perf_counter() - self.start_time
                 if elapsed > self.max_time_seconds:
                     import logging
+                    import sys
                     logger = logging.getLogger("odin_strawberry")
                     logger.warning(f"!!! TIME LIMIT REACHED ({elapsed/3600:.2f}h). Stopping training gracefully... !!!")
-                    self.trainer.iter = self.trainer.max_iter # Сигнал к остановке основного цикла
+                    
+                    # Принудительно сохраняем чекпоинт перед выходом
+                    # Используем имя 'model_final', чтобы Kaggle-скрипт мог его подхватить
+                    try:
+                        self.trainer.checkpointer.save("model_final")
+                        logger.info("--- [TIME LIMIT] Финальный чекпоинт model_final успешно сохранен. ---")
+                    except Exception as e:
+                        logger.error(f"--- [TIME LIMIT] Ошибка при сохранении финального чекпоинта: {e} ---")
+                    
+                    # Завершаем процесс. В Kaggle это приведет к успешному завершению ячейки/скрипта.
+                    sys.exit(0)
 
         max_time = getattr(self.cfg, "MAX_TIME_HOURS", 11.5)
         all_hooks.append(TimeLimitHook(max_time))
