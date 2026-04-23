@@ -1170,7 +1170,6 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
     parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
     parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")
-    parser.add_argument("--max_time", type=float, default=11.5, help="Stop training after N hours")
     
     args = parser.parse_args()
     
