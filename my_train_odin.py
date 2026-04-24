@@ -722,7 +722,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # 8. Очистка старых визуализаций (храним первые 5 и последние 10)
         self._cleanup_visualizations()
         
-        df = pd.DataFrame([metrics_for_csv])
+        df_new = pd.DataFrame([metrics_for_csv])
         csv_path = os.path.join(self.cfg.OUTPUT_DIR, "metrics_comparison.csv")
         
         # Переставляем важные колонки в начало для удобства (если они есть)
@@ -732,10 +732,26 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             "eval/fps", "eval/sec_sample", 
             "PQ", "mAP@50"
         ]
-        cols = [c for c in important_cols if c in df.columns] + [c for c in df.columns if c not in important_cols]
-        df = df[cols]
         
-        df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
+        # Если файл уже есть, объединяем его с новыми данными для поддержки новых колонок
+        if os.path.exists(csv_path):
+            try:
+                df_old = pd.read_csv(csv_path)
+                # Объединяем, заполняя недостающие колонки NaN для старых строк
+                df_combined = pd.concat([df_old, df_new], ignore_index=True)
+            except Exception as e:
+                logging.getLogger("odin_strawberry").warning(f"Ошибка при чтении CSV: {e}. Создаем новый.")
+                df_combined = df_new
+        else:
+            df_combined = df_new
+
+        # Сортируем колонки: важные в начале, остальные потом
+        cols = [c for c in important_cols if c in df_combined.columns]
+        other_cols = [c for c in df_combined.columns if c not in important_cols]
+        df_combined = df_combined[cols + other_cols]
+        
+        # Перезаписываем файл целиком с актуальными заголовками
+        df_combined.to_csv(csv_path, index=False)
         
         iter_str = metrics_for_csv.get("iteration", "?")
         pq_val = metrics.get("PQ", 0.0)
