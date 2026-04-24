@@ -532,7 +532,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
                         point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза
-                        point_pred_cat[m] = int(pred_classes[inst_idx]) + 1 # 1-indexed
+                        # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1)
+                        point_pred_cat[m] = int(pred_classes[inst_idx])
 
                 images = v_data.get("images", [])
                 depths = v_data.get("depths", [])
