@@ -246,4 +246,15 @@ def add_maskformer2_video_config(cfg):
     cfg.TEXT_ENCODER_TYPE = "roberta"
     
     # Bayesian Inference
-    cfg.MODEL.BAYESIAN_SAMPLES = 1 # Number of MC samples for probability estimation
+    cfg.MODEL.BAYESIAN_TYPE = "none"  # Options: "none", "mc_dropout", "swag"
+    cfg.MODEL.BAYESIAN_SAMPLES = 1  # Number of MC samples for probability estimation
+    cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING = False  # Use Bayesian inference during training eval (slower)
+
+    # SWAG (Stochastic Weight Averaging-Gaussian) parameters
+    cfg.MODEL.SWAG = CN()
+    cfg.MODEL.SWAG.START_EPOCH = 10  # Epoch to start collecting SWAG statistics
+    cfg.MODEL.SWAG.UPDATE_FREQ = 5  # Update SWAG stats every N iterations
+    cfg.MODEL.SWAG.MAX_MODELS = 20  # Maximum number of weight snapshots to store
+    cfg.MODEL.SWAG.SCALE = 1.0  # Sampling scale for SWAG posterior
+    cfg.MODEL.SWAG.RANK = 20  # Rank for low-rank covariance approximation
+    cfg.MODEL.SWAG.NO_COV_MAT = False  # If True, use diagonal-only SWAG (faster)

@@ -198,66 +198,170 @@ class ODINHead(nn.Module):
         # Feed to Transformer decoder
         if shape is None:
             shape = [multi_scale_features[0].shape[0], 1]
-            
-        # Bayesian Inference: Monte Carlo Sampling
+
+        # Bayesian Inference: Select inference mode
+        bayesian_type = getattr(self.cfg.MODEL, "BAYESIAN_TYPE", "none")
         num_samples = getattr(self.cfg.MODEL, "BAYESIAN_SAMPLES", 1)
-        
-        if not self.training and num_samples > 1:
-            all_outputs = []
-            for _ in range(num_samples):
-                out = self.predictor(
-                    x=multi_scale_features,
-                    mask_features=mask_features,
-                    shape = shape[:2],
-                    x_xyz=multi_scale_xyz,
-                    mask=mask,
-                    mask_features_xyz=mask_features_xyz, 
-                    multiview_data=multiview_data, 
-                    segments=segments,
-                    scannet_p2v=scannet_p2v,
-                    decoder_3d=decoder_3d,
-                    captions=captions,
-                    positive_map_od=positive_map_od,
-                    num_classes=num_classes
-                )
-                all_outputs.append(out)
-            
-            # Усредняем вероятности (Softmax) для байесовской оценки
-            # Мы усредняем результаты только для финального предсказания
-            predictions = all_outputs[0] # Берем структуру и маски из первого прохода (они детерминированы)
-            
-            # Собираем логиты со всех проходов
-            logits_stack = torch.stack([o['pred_logits'] for o in all_outputs]) # [S, B, Q, C]
-            
-            # Вычисляем среднюю вероятность
-            avg_probs = torch.softmax(logits_stack, dim=-1).mean(dim=0)
-            
-            # Переводим обратно в "байесовские логиты" для совместимости с остальным кодом
-            # Мы используем log(probs + eps) для имитации логитов
-            predictions['pred_logits'] = torch.log(avg_probs + 1e-8)
-            
-            # Аналогично для вспомогательных выходов (aux_outputs), если они есть
-            if "aux_outputs" in predictions:
-                for i in range(len(predictions["aux_outputs"])):
-                    aux_logits_stack = torch.stack([o["aux_outputs"][i]["pred_logits"] for o in all_outputs])
-                    avg_aux_probs = torch.softmax(aux_logits_stack, dim=-1).mean(dim=0)
-                    predictions["aux_outputs"][i]["pred_logits"] = torch.log(avg_aux_probs + 1e-8)
+
+        # Prepare forward pass arguments
+        forward_kwargs = {
+            'x': multi_scale_features,
+            'mask_features': mask_features,
+            'shape': shape[:2],
+            'x_xyz': multi_scale_xyz,
+            'mask': mask,
+            'mask_features_xyz': mask_features_xyz,
+            'multiview_data': multiview_data,
+            'segments': segments,
+            'scannet_p2v': scannet_p2v,
+            'decoder_3d': decoder_3d,
+            'captions': captions,
+            'positive_map_od': positive_map_od,
+            'num_classes': num_classes
+        }
+
+        # Determine if we should use Bayesian inference
+        # During training, only use Bayesian inference if explicitly enabled
+        use_bayesian_inference = (
+            not self.training and
+            bayesian_type != "none" and
+            num_samples > 1
+        )
+
+        # Override: disable Bayesian inference during training eval unless explicitly enabled
+        if self.training:
+            bayesian_during_training = getattr(self.cfg.MODEL, "BAYESIAN_INFERENCE_DURING_TRAINING", False)
+            if not bayesian_during_training:
+                use_bayesian_inference = False
+
+        # Select inference method
+        if use_bayesian_inference:
+            if bayesian_type == "mc_dropout":
+                predictions = self._mc_dropout_inference(num_samples, forward_kwargs)
+            elif bayesian_type == "swag":
+                predictions = self._swag_inference(num_samples, forward_kwargs)
+            else:
+                # Unknown type, fall back to deterministic
+                predictions = self._deterministic_inference(forward_kwargs)
         else:
-            # Обычный детерминированный проход (или 1 сэмпл Dropout)
-            predictions = self.predictor(
-                x=multi_scale_features,
-                mask_features=mask_features,
-                shape = shape[:2],
-                x_xyz=multi_scale_xyz,
-                mask=mask,
-                mask_features_xyz=mask_features_xyz, 
-                multiview_data=multiview_data, 
-                segments=segments,
-                scannet_p2v=scannet_p2v,
-                decoder_3d=decoder_3d,
-                captions=captions,
-                positive_map_od=positive_map_od,
-                num_classes=num_classes
-            )
-            
+            # Training or deterministic inference
+            predictions = self._deterministic_inference(forward_kwargs)
+
+        return predictions
+
+    def _deterministic_inference(self, forward_kwargs):
+        """
+        Deterministic inference: single forward pass without sampling.
+
+        Args:
+            forward_kwargs: Dictionary of arguments for predictor forward pass
+
+        Returns:
+            Model predictions
+        """
+        return self.predictor(**forward_kwargs)
+
+    def _mc_dropout_inference(self, num_samples, forward_kwargs):
+        """
+        MC Dropout inference: multiple forward passes with dropout enabled.
+
+        This method fixes the original implementation by actually enabling dropout
+        during inference, rather than just repeating deterministic passes.
+
+        Args:
+            num_samples: Number of MC samples to draw
+            forward_kwargs: Dictionary of arguments for predictor forward pass
+
+        Returns:
+            Averaged predictions over MC samples
+        """
+        # Enable dropout layers while keeping BatchNorm in eval mode
+        def enable_dropout(m):
+            if isinstance(m, nn.Dropout):
+                m.train()
+
+        self.predictor.apply(enable_dropout)
+
+        all_outputs = []
+        for _ in range(num_samples):
+            out = self.predictor(**forward_kwargs)
+            all_outputs.append(out)
+
+        # Restore eval mode
+        self.predictor.eval()
+
+        # Average predictions
+        predictions = self._average_predictions(all_outputs)
+
+        return predictions
+
+    def _swag_inference(self, num_samples, forward_kwargs):
+        """
+        SWAG inference: sample weights from SWAG posterior and run forward passes.
+
+        Requires SWAG wrapper to be attached to the model during training.
+
+        Args:
+            num_samples: Number of weight samples to draw
+            forward_kwargs: Dictionary of arguments for predictor forward pass
+
+        Returns:
+            Averaged predictions over SWAG samples
+        """
+        # Check if SWAG wrapper exists
+        if not hasattr(self, 'swag_model') or self.swag_model is None:
+            print("Warning: SWAG model not found, falling back to deterministic inference")
+            return self._deterministic_inference(forward_kwargs)
+
+        scale = getattr(self.cfg.MODEL.SWAG, "SCALE", 1.0)
+
+        all_outputs = []
+        for _ in range(num_samples):
+            # Sample weights from SWAG posterior
+            self.swag_model.sample(scale=scale, cov=True)
+
+            # Forward pass with sampled weights
+            out = self.predictor(**forward_kwargs)
+            all_outputs.append(out)
+
+        # Restore SWA mean weights
+        self.swag_model.set_swa()
+
+        # Average predictions
+        predictions = self._average_predictions(all_outputs)
+
+        return predictions
+
+    def _average_predictions(self, all_outputs):
+        """
+        Average predictions from multiple forward passes.
+
+        Averages softmax probabilities and converts back to log-probabilities
+        for compatibility with the rest of the codebase.
+
+        Args:
+            all_outputs: List of prediction dictionaries from multiple forward passes
+
+        Returns:
+            Averaged predictions
+        """
+        # Use first output as template
+        predictions = all_outputs[0]
+
+        # Stack and average logits
+        logits_stack = torch.stack([o['pred_logits'] for o in all_outputs])  # [S, B, Q, C]
+
+        # Average probabilities (not logits)
+        avg_probs = torch.softmax(logits_stack, dim=-1).mean(dim=0)
+
+        # Convert back to log-probabilities
+        predictions['pred_logits'] = torch.log(avg_probs + 1e-8)
+
+        # Average auxiliary outputs if present
+        if "aux_outputs" in predictions:
+            for i in range(len(predictions["aux_outputs"])):
+                aux_logits_stack = torch.stack([o["aux_outputs"][i]["pred_logits"] for o in all_outputs])
+                avg_aux_probs = torch.softmax(aux_logits_stack, dim=-1).mean(dim=0)
+                predictions["aux_outputs"][i]["pred_logits"] = torch.log(avg_aux_probs + 1e-8)
+
         return predictions

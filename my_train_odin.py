@@ -50,6 +50,7 @@ from odin.data_video.segmentation_benchmark.evaluate_semantic_instance import Sc
 from odin.utils.util_video_to_3d import convert_video_instances_to_3d
 from odin.utils.util_3d import convert_3d_to_2d_dict_format
 from odin.modeling.backproject.backproject import backprojector_dataloader, multiscsale_voxelize
+from odin.modeling.bayesian.swag import SWAG
 import pandas as pd
 
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -376,6 +377,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self.inference_times = []  # Store time per process call
         self.vis_data = {}        # Optional: store heavy visual data for subset of samples
         self.total_frames = 0     # Track total frames for accurate speed metrics
+        self.uncertainties = []   # Store uncertainty (entropy) per sample
         self._current_idx = 0
         
     def process(self, inputs, outputs):
@@ -384,20 +386,28 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         outputs: List of model outputs
         """
         target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
-        
+
         for _in, _out in zip(inputs, outputs):
             start_t = time.perf_counter()
             idx = self._current_idx
             sample_id = str(_in.get("image_id", ""))
-            
+
             # 1. Parse and store ground truth (3D masks/labels)
             # This is much lighter than the full _in (RGB, Depth, Large XYZ tensors)
             self.processed_gts[idx] = self._parse_gt(_in)
-            
+
             # 2. Parse and store prediction
             self.processed_preds[idx] = self._parse_pred(_out)
-            
-            # 3. Check if we need visualization for this sample
+
+            # 3. Calculate uncertainty (entropy) from pred_logits
+            if 'pred_logits' in _out:
+                logits = _out['pred_logits']  # Shape: (B, num_queries, num_classes)
+                probs = torch.softmax(logits, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)  # (B, num_queries)
+                mean_entropy = entropy.mean().item()
+                self.uncertainties.append(mean_entropy)
+
+            # 4. Check if we need visualization for this sample
             is_target = any(ts in sample_id for ts in target_samples)
             if is_target:
                 # Store only the minimum data needed for build_html (ON CPU)
@@ -411,18 +421,20 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     "color_map": copy.deepcopy(_in.get("color_map", {})),
                     "instances_all": copy.deepcopy(_in.get("instances_all", [])) # 2D masks for visualization
                 }
-            
-            # 4. CRITICAL: Explicitly release references to large tensors in inputs
+
+            # 5. Count frames and timing BEFORE deleting tensors
+            num_frames = len(_in.get("images", []))
+            self.inference_times.append(time.perf_counter() - start_t)
+            self.total_frames += num_frames
+            self._current_idx += 1
+
+            # 6. CRITICAL: Explicitly release references to large tensors in inputs
             # To help garbage collection between batches
             if "multi_scale_xyz" in _in: del _in["multi_scale_xyz"]
             if "multi_scale_p2v" in _in: del _in["multi_scale_p2v"]
             if "original_xyz" in _in: del _in["original_xyz"]
             if "images" in _in: del _in["images"]
             if "depths" in _in: del _in["depths"]
-            
-            self.inference_times.append(time.perf_counter() - start_t)
-            self.total_frames += len(_in.get("images", []))
-            self._current_idx += 1
         
         # Force garbage collection after each batch
         gc.collect()
@@ -681,6 +693,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             "mAP": ap_results["all_ap"] * 100.0,
             "mAP@50": ap_results["all_ap_50%"] * 100.0,
             "mAP@25": ap_results["all_ap_25%"] * 100.0,
+            "mean_uncertainty": np.mean(self.uncertainties) if self.uncertainties else 0.0,
         }
         
         # Режим дебага: выводим PrettyTable в консоль
@@ -707,6 +720,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             pass
 
         # 7. Расчет метрик производительности инференса
+        logger = logging.getLogger(__name__)
+        logger.info(f"Inference timing: {len(self.inference_times)} samples, {self.total_frames} frames")
+
         if self.inference_times and self.total_frames > 0:
             total_time = sum(self.inference_times)
             avg_sec_sample = total_time / len(self.inference_times)
@@ -715,6 +731,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             # Keep old names for compatibility if needed
             metrics["perf/val_sec_sample"] = metrics["eval/sec_sample"]
             metrics["perf/val_fps"] = metrics["eval/fps"]
+            logger.info(f"Eval speed metrics: {metrics['eval/fps']:.2f} fps, {metrics['eval/sec_sample']:.4f} sec/sample")
+        else:
+            logger.warning(f"Cannot compute eval speed metrics: inference_times={len(self.inference_times)}, total_frames={self.total_frames}")
 
         # Формируем итоговый словарь для CSV
         metrics_for_csv = {**system_metrics, **metrics}
@@ -727,10 +746,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         
         # Переставляем важные колонки в начало для удобства (если они есть)
         important_cols = [
-            "iteration", "total_loss", 
-            "train/fps", "train/sec_sample", 
-            "eval/fps", "eval/sec_sample", 
-            "PQ", "mAP@50"
+            "iteration", "total_loss",
+            "train/fps", "train/sec_sample",
+            "eval/fps", "eval/sec_sample",
+            "PQ", "mAP@50", "mean_uncertainty"
         ]
         
         # Если файл уже есть, объединяем его с новыми данными для поддержки новых колонок
@@ -853,8 +872,28 @@ class MyTrainer(DefaultTrainer):
         if not logger.isEnabledFor(logging.INFO):
             setup_logger()
         cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
-        
+
         model = self.build_model(cfg)
+
+        # SWAG wrapper (if enabled) - only for predictor, not entire model
+        self.swag_model = None
+        bayesian_type = getattr(cfg.MODEL, "BAYESIAN_TYPE", "none")
+        if bayesian_type == "swag":
+            logger.info("Initializing SWAG wrapper for predictor (transformer decoder)...")
+            no_cov_mat = getattr(cfg.MODEL.SWAG, "NO_COV_MAT", False)
+            max_num_models = getattr(cfg.MODEL.SWAG, "MAX_MODELS", 20)
+
+            # Wrap only the predictor (transformer decoder with class_embed)
+            if hasattr(model, 'sem_seg_head') and hasattr(model.sem_seg_head, 'predictor'):
+                predictor = model.sem_seg_head.predictor
+                self.swag_model = SWAG(predictor, no_cov_mat=no_cov_mat, max_num_models=max_num_models)
+                # Attach SWAG model to the head for inference
+                model.sem_seg_head.swag_model = self.swag_model
+                logger.info(f"SWAG initialized for predictor: no_cov_mat={no_cov_mat}, max_models={max_num_models}")
+            else:
+                logger.warning("Could not find predictor in model, SWAG disabled")
+                bayesian_type = "none"
+
         optimizer = self.build_optimizer(cfg, model)
         data_loader = self.build_train_loader(cfg)
 
@@ -862,12 +901,12 @@ class MyTrainer(DefaultTrainer):
         # При одиночном запуске DDP требует init_process_group, которого нет
         if comm.get_world_size() > 1:
             model = DistributedDataParallel(model, device_ids=[comm.get_local_rank()])
-        
+
         # Используем наш кастомный трейнер с обрезкой градиентов
         if cfg.SOLVER.AMP.ENABLED:
             self._trainer = AMPTrainerWithClipping(model, data_loader, optimizer, num_frames=cfg.INPUT.SAMPLING_FRAME_NUM)
         else:
-            # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится, 
+            # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится,
             # но сейчас используем только AMP
             self._trainer = SimpleTrainer(model, data_loader, optimizer)
 
@@ -997,6 +1036,51 @@ class MyTrainer(DefaultTrainer):
                 file_prefix="model_best",
             )
         )
+
+        # SWAG Hook: collect weight statistics during training
+        if self.swag_model is not None:
+            class SWAGHook(hooks.HookBase):
+                def __init__(self, swag_model, cfg, dataset_len, batch_size):
+                    self.swag_model = swag_model
+                    self.start_epoch = getattr(cfg.MODEL.SWAG, "START_EPOCH", 10)
+                    self.update_freq = getattr(cfg.MODEL.SWAG, "UPDATE_FREQ", 5)
+                    self.dataset_len = dataset_len
+                    self.batch_size = batch_size
+                    self.collection_started = False
+
+                def after_step(self):
+                    # Calculate current epoch
+                    current_epoch = self.trainer.iter * self.batch_size / self.dataset_len
+
+                    # Start collecting after START_EPOCH
+                    if current_epoch >= self.start_epoch:
+                        if not self.collection_started:
+                            logger = logging.getLogger("odin_strawberry")
+                            logger.info(f">>> SWAG: Starting weight collection at epoch {current_epoch:.2f} <<<")
+                            self.collection_started = True
+
+                        # Collect weights every UPDATE_FREQ iterations
+                        if (self.trainer.iter + 1) % self.update_freq == 0:
+                            # Get base model (unwrap DDP if needed)
+                            model = self.trainer.model
+                            if isinstance(model, DistributedDataParallel):
+                                model = model.module
+
+                            # Collect only predictor weights (not entire model)
+                            if hasattr(model, 'sem_seg_head') and hasattr(model.sem_seg_head, 'predictor'):
+                                predictor = model.sem_seg_head.predictor
+                                self.swag_model.collect_model(predictor)
+                            else:
+                                logger = logging.getLogger("odin_strawberry")
+                                logger.warning(">>> SWAG: Could not find predictor, skipping collection <<<")
+
+                            if (self.trainer.iter + 1) % (self.update_freq * 20) == 0:
+                                logger = logging.getLogger("odin_strawberry")
+                                logger.info(f">>> SWAG: Collected {self.swag_model.n_models} predictor weight snapshots <<<")
+
+            logger.info("Adding SWAG hook for weight statistics collection...")
+            all_hooks.append(SWAGHook(self.swag_model, self.cfg, dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
+
         return all_hooks
 
     @classmethod
@@ -1054,6 +1138,38 @@ class MyTrainer(DefaultTrainer):
         # Implementation mirrors original train_odin.py
         optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.SOLVER.BASE_LR)
         return optimizer
+
+    def resume_or_load(self, resume=True):
+        """
+        Override to handle SWAG state loading.
+        """
+        checkpoint = super().resume_or_load(resume=resume)
+
+        # Load SWAG state if available
+        if self.swag_model is not None and resume:
+            swag_file = os.path.join(self.cfg.OUTPUT_DIR, "swag_state.pth")
+            if os.path.exists(swag_file):
+                logger = logging.getLogger("odin_strawberry")
+                logger.info(f"Loading SWAG state from {swag_file}")
+                swag_state = torch.load(swag_file, map_location="cpu")
+                self.swag_model.load_state_dict(swag_state)
+                logger.info(f"SWAG state loaded: {self.swag_model.n_models} models collected")
+
+        return checkpoint
+
+    def _write_metrics(self, loss_dict, data_time, prefix=""):
+        """
+        Override to save SWAG state with checkpoints.
+        """
+        super()._write_metrics(loss_dict, data_time, prefix)
+
+        # Save SWAG state periodically (same frequency as checkpoints)
+        if self.swag_model is not None and self.swag_model.n_models > 0:
+            if (self.iter + 1) % self.cfg.SOLVER.CHECKPOINT_PERIOD == 0:
+                swag_file = os.path.join(self.cfg.OUTPUT_DIR, "swag_state.pth")
+                torch.save(self.swag_model.state_dict(), swag_file)
+                logger = logging.getLogger("odin_strawberry")
+                logger.info(f">>> SWAG state saved: {self.swag_model.n_models} models <<<")
 
 
 def setup(args):
