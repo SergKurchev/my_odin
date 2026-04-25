@@ -524,16 +524,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 if pred_masks is not None and len(pred_masks) > 0:
                     num_pred_instances = pred_masks.shape[0]
                     num_pts_total = pred_masks.shape[1]
-                    # Создаем карту меток для всех точек сразу
-                    point_pred_inst = np.zeros(num_pts_total, dtype=np.int32)
-                    point_pred_cat = np.zeros(num_pts_total, dtype=np.int32) - 1 # Default to -1 (background)
+                    # Создаем карту меток для всех точек сразу (фон = -1)
+                    point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
+                    point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
                     
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
-                        point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза инстансов
-                        # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1)
-                        # А визуализатор (build_html) ожидает 0-индексированные (0, 1, 2)
+                        point_pred_inst[m] = inst_idx # 0-indexed для виза
+                        # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1), поэтому вычитаем 1
                         point_pred_cat[m] = int(pred_classes[inst_idx]) - 1
 
                 images = v_data.get("images", [])
@@ -544,10 +543,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 
                 # Рассчитываем padding как в маппере для правильной глобальной индексации
                 H_orig, W_orig = images[0].shape[1:]
-                pad_h = int(np.ceil(H_orig / 32) * 32 - H_orig)
-                pad_w = int(np.ceil(W_orig / 32) * 32 - W_orig)
-                H_padded, W_padded = H_orig + pad_h, W_orig + pad_w
-                
+                div = self.cfg.INPUT.SIZE_DIVISIBILITY
+                H_padded = int(np.ceil(H_orig / div) * div)
+                W_padded = int(np.ceil(W_orig / div) * div)
+
                 for camera_idx in range(len(images)):
                     img = images[camera_idx].numpy().transpose(1, 2, 0)
                     Z_full = depths[camera_idx].numpy()
@@ -564,9 +563,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     Z_s = Z_full[::stride, ::stride]
                     valid = (Z_s > 0.001) & (Z_s < 5.0)
                     
-                    # 1. Сбор GT масок для текущего кадра
-                    inst_gt_frame = np.zeros((H, W), dtype=np.int32) - 1 # Default background
-                    cat_gt_frame = np.zeros((H, W), dtype=np.int32) - 1 # Default background
+                    # 1. Сбор GT масок для текущего кадра (фон = -1)
+                    inst_gt_frame = np.full((H, W), -1, dtype=np.int32)
+                    cat_gt_frame = np.full((H, W), -1, dtype=np.int32)
                     
                     if 'instances_all' in v_data and camera_idx < len(v_data['instances_all']):
                         instances = v_data['instances_all'][camera_idx]
@@ -577,7 +576,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0
                                 inst_gt_frame[m_mask] = int(gt_ids[inst_i])
-                                # Визуализатор ожидает 0-индексированные классы
                                 cat_gt_frame[m_mask] = int(gt_c[inst_i])
 
                     # 2. Проекция
@@ -603,8 +601,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     cat_gt = cat_gt_frame[::stride, ::stride].ravel()[fv]
 
                     # Выборка масок Pred через глобальную индексацию
-                    inst_pred = np.zeros_like(inst_gt)
-                    cat_pred = np.zeros_like(cat_gt)
+                    inst_pred = np.full_like(inst_gt, -1)
+                    cat_pred = np.full_like(cat_gt, -1)
                     
                     if point_pred_inst is not None:
                         rows = vv[valid].astype(np.int32)
