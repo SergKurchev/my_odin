@@ -526,14 +526,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     num_pts_total = pred_masks.shape[1]
                     # Создаем карту меток для всех точек сразу
                     point_pred_inst = np.zeros(num_pts_total, dtype=np.int32)
-                    point_pred_cat = np.zeros(num_pts_total, dtype=np.int32)
+                    point_pred_cat = np.zeros(num_pts_total, dtype=np.int32) - 1 # Default to -1 (background)
                     
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
-                        point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза
+                        point_pred_inst[m] = inst_idx + 1 # 1-indexed для виза инстансов
                         # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1)
-                        point_pred_cat[m] = int(pred_classes[inst_idx])
+                        # А визуализатор (build_html) ожидает 0-индексированные (0, 1, 2)
+                        point_pred_cat[m] = int(pred_classes[inst_idx]) - 1
 
                 images = v_data.get("images", [])
                 depths = v_data.get("depths", [])
@@ -543,10 +544,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 
                 # Рассчитываем padding как в маппере для правильной глобальной индексации
                 H_orig, W_orig = images[0].shape[1:]
-                div = self.cfg.INPUT.SIZE_DIVISIBILITY
-                H_padded = int(np.ceil(H_orig / div) * div)
-                W_padded = int(np.ceil(W_orig / div) * div)
-
+                pad_h = int(np.ceil(H_orig / 32) * 32 - H_orig)
+                pad_w = int(np.ceil(W_orig / 32) * 32 - W_orig)
+                H_padded, W_padded = H_orig + pad_h, W_orig + pad_w
+                
                 for camera_idx in range(len(images)):
                     img = images[camera_idx].numpy().transpose(1, 2, 0)
                     Z_full = depths[camera_idx].numpy()
@@ -564,8 +565,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     valid = (Z_s > 0.001) & (Z_s < 5.0)
                     
                     # 1. Сбор GT масок для текущего кадра
-                    inst_gt_frame = np.zeros((H, W), dtype=np.int32)
-                    cat_gt_frame = np.zeros((H, W), dtype=np.int32)
+                    inst_gt_frame = np.zeros((H, W), dtype=np.int32) - 1 # Default background
+                    cat_gt_frame = np.zeros((H, W), dtype=np.int32) - 1 # Default background
                     
                     if 'instances_all' in v_data and camera_idx < len(v_data['instances_all']):
                         instances = v_data['instances_all'][camera_idx]
@@ -576,7 +577,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0
                                 inst_gt_frame[m_mask] = int(gt_ids[inst_i])
-                                cat_gt_frame[m_mask] = int(gt_c[inst_i]) + 1
+                                # Визуализатор ожидает 0-индексированные классы
+                                cat_gt_frame[m_mask] = int(gt_c[inst_i])
 
                     # 2. Проекция
                     X_cam =  (uu - cx) * Z_s / fx
