@@ -5,6 +5,15 @@
 ## 0. Стабильная версия (Stable Baseline)
 **Текущий рабочий ноутбук на  kaggle:** [`strawpick-segpoinnet-my-odin`](https://www.kaggle.com/code/sergkurchevusa/strawpick-segpoinnet-my-odin/output?scriptVersionId=313026137)
 
+**Метрики:**
+- `iteration`: 2879
+- `total_loss`: 7.2639570569153875
+- `PQ`: 52.79569217686208
+- `SQ`: 69.03304133622852
+- `RQ`: 76.47887323943662
+- `mAP`: 32.64766504558833
+- `mAP@50`: 72.3151450339084
+- `mAP@25`: 81.93239412340795
 ## 1. Назначение `my_train_odin.py`
 Этот скрипт – адаптированная версия `train_odin.py`. В нём настроены:
 - Парсинг специфичной файловой структуры `multiview_dataset`.
