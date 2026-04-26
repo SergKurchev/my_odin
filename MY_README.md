@@ -81,8 +81,87 @@
 Эти изменения критически важны для успешного запуска ODIN в Kaggle с 1 GPU на T4 (15.2 GB), чтобы предотвратить Out-of-Memory (OOM) ошибки. Выходные метрики и веса сохраняются в папке `output`.
 
 ## 3. Байесовская классификация (Bayesian Inference)
-В модель интегрирован механизм **Monte Carlo Dropout** для оценки неопределенности:
+В модель интегрирован механизм **SWAG (Stochastic Weight Averaging-Gaussian)** и **Monte Carlo Dropout** для оценки неопределенности:
 1. **MC Dropout**: В голову классификации добавлен слой Dropout, который остается активным во время инференса (`F.dropout(..., training=True)`).
-2. **Вероятностная оценка**: Модель выполняет несколько проходов (по умолчанию 5) и усредняет результаты в пространстве вероятностей.
-3. **Зачем это нужно**: Это позволяет получить калиброванные вероятности классов. Высокая энтропия предсказания служит сигналом для NBV-планировщика, что объект требует дополнительного обследования.
-4. **Настройка**: Количество сэмплов регулируется параметром `MODEL.BAYESIAN_SAMPLES`.
+2. **SWAG**: Собирает статистику весов модели во время обучения и сэмплирует из апостериорного распределения при инференсе.
+3. **Вероятностная оценка**: Модель выполняет несколько проходов (по умолчанию 5-10) и усредняет результаты в пространстве вероятностей.
+4. **Зачем это нужно**: Это позволяет получить калиброванные вероятности классов. Высокая энтропия предсказания служит сигналом для NBV-планировщика, что объект требует дополнительного обследования.
+5. **Настройка**: Количество сэмплов регулируется параметром `MODEL.BAYESIAN_SAMPLES`.
+
+## 4. Поддержка NBV Stage2 Dataset (24 класса)
+
+### Автоматическое определение типа датасета
+Код автоматически определяет тип датасета по формату `cameras.json` и `color_map.json`:
+- **Strawberry Dataset**: 3 класса (Ripe, Unripe, Half-ripe)
+- **NBV Stage2 Dataset**: 24 класса (8 примитивов × 3 текстуры)
+
+### NBV Stage2 Class Mapping (24 класса)
+
+NBV Stage2 содержит 8 геометрических примитивов с 3 типами текстур, что дает **24 уникальных класса**:
+
+**Примитивы (Primitive IDs 1-8)**:
+1. cube (куб)
+2. sphere (сфера)
+3. cylinder (цилиндр)
+4. cone (конус)
+5. torus (тор)
+6. capsule (капсула)
+7. ellipsoid (эллипсоид)
+8. pyramid (пирамида)
+
+**Текстуры (Texture Types)**:
+- `red` - красная текстура
+- `mixed` - смешанная градиентная текстура
+- `green` - зеленая текстура
+
+**Маппинг классов (Class ID 0-23)**:
+```
+Class  0: cube_red          Class  8: cylinder_green    Class 16: capsule_mixed
+Class  1: cube_mixed        Class  9: cone_red          Class 17: capsule_green
+Class  2: cube_green        Class 10: cone_mixed        Class 18: ellipsoid_red
+Class  3: sphere_red        Class 11: cone_green        Class 19: ellipsoid_mixed
+Class  4: sphere_mixed      Class 12: torus_red         Class 20: ellipsoid_green
+Class  5: sphere_green      Class 13: torus_mixed       Class 21: pyramid_red
+Class  6: cylinder_red      Class 14: torus_green       Class 22: pyramid_mixed
+Class  7: cylinder_mixed    Class 15: capsule_red       Class 23: pyramid_green
+```
+
+**Важно**: Робот (`category_id=9` в исходных данных) исключается из обучения и рассматривается как фон.
+
+### Конверсия классов в data loader
+
+В `get_nbv_stage2_dataset_dicts()` происходит автоматическая конверсия:
+```python
+# Исходный формат в color_map.json:
+{
+  "category_id": 6,        # Primitive ID (capsule)
+  "texture_type": "green"  # Texture type
+}
+
+# Конвертируется в:
+{
+  "category_id": 17        # Unified class ID (capsule_green)
+}
+```
+
+Формула конверсии: `class_id = (primitive_id - 1) * 3 + texture_index`
+
+Где `texture_index`: red=0, mixed=1, green=2
+
+### Использование
+
+Просто укажите путь к NBV Stage2 датасету - тип определится автоматически:
+
+```bash
+python my_train_odin.py \
+  --dataset_dir /path/to/nbv-stage2-dataset \
+  --splits_file splits.json \
+  --num_epochs 15
+```
+
+Код автоматически:
+- Определит NBV Stage2 формат
+- Создаст 24 класса
+- Исключит робота из обучения
+- Установит `MODEL.SEM_SEG_HEAD.NUM_CLASSES = 24`
+

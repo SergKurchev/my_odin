@@ -56,7 +56,13 @@ def main():
     with open(s_dir / "color_map.json", "r") as f:
         color_map = json.load(f)
 
-    color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+    # Support both dict format (Strawberry) and list format (NBV Stage2)
+    if isinstance(color_map, dict):
+        color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+    elif isinstance(color_map, list):
+        color_to_info = {tuple(v["color"]): v for v in color_map}
+    else:
+        raise ValueError(f"Unsupported color_map format: {type(color_map)}")
 
     # Ограничиваем сэмпл 5 кадрами (CHUNK_SIZE = 5), как это теперь делает get_strawberry_dataset_dicts
     CHUNK_SIZE = 5
@@ -125,29 +131,57 @@ def main():
         straw = mask_r > 0
         for color, info in color_to_info.items():
             px = straw & (mask_r == color[0]) & (mask_g == color[1]) & (mask_b == color[2])
-            
             inst_img[px] = info["instance_id"]
             cat_img[px] = info["category_id"]
             
-            # Делаем ошибку детерминированной для данного инстанса (чтобы во всех кадрах была одинаковой)
-            np.random.seed(info["instance_id"])
-            
-            # "Slightly wrong" predictions: сдвигаем ID на 0/1/2
-            fake_inst = info["instance_id"] + np.random.randint(0, 3) 
-            
-            fake_cat = info["category_id"]
-            if np.random.rand() < 0.3: # 30% error
-                fake_cat = (fake_cat + 1) % 3
-                
-            pred_inst_img[px] = fake_inst
-            pred_cat_img[px] = fake_cat
-            
         gt_inst = inst_img.ravel()[fv]
         gt_cat = cat_img.ravel()[fv]
-        pred_inst = pred_inst_img.ravel()[fv]
-        pred_cat = pred_cat_img.ravel()[fv]
+
+        # -------------------------------------------------------------
+        # Mocking ODIN global predictions exactly like my_train_odin.py
+        # -------------------------------------------------------------
+        # Suppose ODIN gave us pred_classes in 1-based format (1, 2, 3)
+        # We will map them to our flat point list.
+        # Instead of actually creating a giant point array, we'll just map
+        # the GT directly to emulate the loop in my_train_odin.py.
         
-        chunk = np.column_stack([pts_chunk, r, g, b, gt_inst, gt_cat, pred_inst, pred_cat]).astype(np.float32)
+        # 1. Эмуляция ODIN-предсказаний (1-indexed) на глобальных точках (как в my_train_odin.py)
+        H_padded, W_padded = H, W # Full size
+        point_pred_inst = np.full(H * W, -1, dtype=np.int32)
+        point_pred_cat = np.full(H * W, -1, dtype=np.int32)
+        
+        # В my_train_odin.py pred_masks имеют полный размер (H, W).
+        straw_full = mask_img[:,:,0] > 0
+        mask_r_f, mask_g_f, mask_b_f = mask_img[:,:,0], mask_img[:,:,1], mask_img[:,:,2]
+        
+        for color, info in color_to_info.items():
+            px_full = straw_full & (mask_r_f == color[0]) & (mask_g_f == color[1]) & (mask_b_f == color[2])
+            fake_inst = info["instance_id"]
+            fake_cat = info["category_id"]
+            
+            # ВАЖНО: ODIN выдает классы с +1
+            odin_pred_class = fake_cat + 1
+            
+            # Точный код из фикса my_train_odin.py
+            px_flat = px_full.ravel()
+            point_pred_inst[px_flat] = fake_inst
+            point_pred_cat[px_flat] = odin_pred_class - 1
+
+        # 2. Выборка через глобальную индексацию (Копия из my_train_odin.py)
+        inst_pred = np.full_like(gt_inst, -1, dtype=np.int32)
+        cat_pred = np.full_like(gt_cat, -1, dtype=np.int32)
+        
+        rows = vv[valid].astype(np.int32)
+        cols = uu[valid].astype(np.int32)
+        
+        # В test_vis у нас только один кадр за раз, camera_idx = 0
+        global_indices = 0 * (H_padded * W_padded) + rows * W_padded + cols
+        
+        valid_global = global_indices < len(point_pred_inst)
+        inst_pred[valid_global] = point_pred_inst[global_indices[valid_global]]
+        cat_pred[valid_global] = point_pred_cat[global_indices[valid_global]]
+
+        chunk = np.column_stack([pts_chunk, r, g, b, gt_inst, gt_cat, inst_pred, cat_pred]).astype(np.float32)
         chunks.append(chunk)
         
         cam_dict = {

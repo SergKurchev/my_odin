@@ -75,6 +75,167 @@ def quat_to_rotmat(x, y, z, w):
 CATEGORIES = {0: "Ripe", 1: "Unripe", 2: "Half-ripe"} # 3 is Peduncle but ignored
 NUM_CLASSES = len(CATEGORIES)
 
+# NBV Stage2: 8 primitives × 3 textures = 24 classes
+# Primitive IDs: 1-8 (cube, sphere, cylinder, cone, torus, capsule, ellipsoid, pyramid)
+# Texture types: red, mixed, green
+# Robot (category_id=9) is excluded (background)
+NBV_PRIMITIVE_NAMES = {
+    1: "cube", 2: "sphere", 3: "cylinder", 4: "cone",
+    5: "torus", 6: "capsule", 7: "ellipsoid", 8: "pyramid"
+}
+NBV_TEXTURE_NAMES = ["red", "mixed", "green"]
+
+# Generate 24 classes: primitive_texture (e.g., "cube_red", "sphere_mixed", etc.)
+NBV_CATEGORIES = {}
+class_id = 0
+for prim_id in sorted(NBV_PRIMITIVE_NAMES.keys()):
+    for texture in NBV_TEXTURE_NAMES:
+        NBV_CATEGORIES[class_id] = f"{NBV_PRIMITIVE_NAMES[prim_id]}_{texture}"
+        class_id += 1
+
+# Mapping from (primitive_id, texture_type) to class_id
+NBV_PRIMITIVE_TEXTURE_TO_CLASS = {}
+class_id = 0
+for prim_id in sorted(NBV_PRIMITIVE_NAMES.keys()):
+    for texture in NBV_TEXTURE_NAMES:
+        NBV_PRIMITIVE_TEXTURE_TO_CLASS[(prim_id, texture)] = class_id
+        class_id += 1
+
+def get_nbv_stage2_dataset_dicts(dataset_dir: str, splits_file: str, split: str):
+    """
+    NBV Stage2 specific loader.
+    Differences from Strawberry:
+    - cameras.json is a dict {"00000": {...}, "00001": {...}}
+    - color_map.json is a list [{color, instance_id, category_id, category_name, texture_type}, ...]
+    - No 'ripeness' field, has 'texture_type' instead
+    - category_id ranges 0-9 (8 primitives + robot)
+    """
+    with open(splits_file, "r") as f:
+        splits = json.load(f)
+
+    sample_ids = splits.get(split, [])
+    dataset_dicts = []
+
+    for sid in sample_ids:
+        s_dir = Path(dataset_dir) / sid
+        if not s_dir.exists():
+            s_dir = Path(dataset_dir) / f"sample_{str(sid).zfill(5)}"
+        if not s_dir.exists():
+            continue
+
+        cameras_path = s_dir / "cameras.json"
+        color_map_path = s_dir / "color_map.json"
+
+        if not cameras_path.exists() or not color_map_path.exists():
+            continue
+
+        with open(cameras_path, "r") as f:
+            cameras_dict = json.load(f)  # Dict format!
+        with open(color_map_path, "r") as f:
+            color_map = json.load(f)  # List format!
+
+        # Convert cameras dict to sorted list
+        cameras = []
+        for frame_key in sorted(cameras_dict.keys()):
+            cam_data = cameras_dict[frame_key]
+            # Convert to Strawberry-like format
+            cameras.append({
+                "frame_index": int(frame_key),
+                "intrinsics": cam_data["intrinsics"],
+                "position": cam_data["position"],
+                "rotation": cam_data["rotation"]
+            })
+
+        # Build color_to_info from list and convert to 24-class format
+        # Skip robot (category_id=9), convert (primitive_id, texture_type) to class_id
+        color_to_info = {}
+        for v in color_map:
+            prim_id = v["category_id"]
+
+            # Skip robot (background)
+            if prim_id == 9:
+                continue
+
+            # Skip if not a valid primitive
+            if prim_id not in NBV_PRIMITIVE_NAMES:
+                continue
+
+            texture = v.get("texture_type")
+            if texture not in NBV_TEXTURE_NAMES:
+                continue
+
+            # Convert (primitive_id, texture_type) to unified class_id (0-23)
+            new_class_id = NBV_PRIMITIVE_TEXTURE_TO_CLASS[(prim_id, texture)]
+
+            # Store with new class_id
+            new_info = v.copy()
+            new_info["category_id"] = new_class_id
+            color_to_info[tuple(v["color"])] = new_info
+
+        # Process in chunks
+        CHUNK_SIZE = 5
+        for start_idx in range(0, len(cameras), CHUNK_SIZE):
+            chunk_cams = cameras[start_idx:start_idx+CHUNK_SIZE]
+            if len(chunk_cams) < CHUNK_SIZE:
+                continue
+
+            file_names = []
+            depth_file_names = []
+            masks_file_names = []
+            intrinsics = []
+            poses = []
+
+            for cam in chunk_cams:
+                fi = cam["frame_index"]
+                name = f"{fi:05d}"
+
+                rgb_p = s_dir / "rgb" / f"{name}.png"
+                depth_p = s_dir / "depth" / f"{name}.npy"
+                mask_p = s_dir / "masks" / f"{name}.png"
+
+                if rgb_p.exists() and depth_p.exists():
+                    file_names.append(str(rgb_p))
+                    depth_file_names.append(str(depth_p))
+                    masks_file_names.append(str(mask_p) if mask_p.exists() else None)
+
+                    intr = cam["intrinsics"]
+                    K = np.array([
+                        [intr["fx"], 0, intr["cx"]],
+                        [0, intr["fy"], intr["cy"]],
+                        [0, 0, 1]
+                    ], dtype=np.float32)
+                    intrinsics.append(K)
+
+                    R = quat_to_rotmat(*cam["rotation"])
+                    t = np.array(cam["position"], dtype=np.float32)
+
+                    pose = np.eye(4, dtype=np.float32)
+                    pose[:3, :3] = R
+                    pose[:3, 3] = t
+                    poses.append(pose)
+
+            if len(file_names) > 0:
+                part_id = start_idx // CHUNK_SIZE
+                first_intr = chunk_cams[0]["intrinsics"]
+                img_w = int(round(first_intr["cx"] * 2))
+                img_h = int(round(first_intr["cy"] * 2))
+
+                record = {
+                    "file_names": file_names,
+                    "depth_file_names": depth_file_names,
+                    "masks_file_names": masks_file_names,
+                    "height": img_h,
+                    "width": img_w,
+                    "intrinsics": intrinsics,
+                    "poses": poses,
+                    "color_to_info": color_to_info,
+                    "sample_id": sid,
+                    "part_id": part_id,
+                }
+                dataset_dicts.append(record)
+
+    return dataset_dicts
+
 def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str):
     """
     Reads splits.json and builds detectron2 formatted dataset dicts.
@@ -107,9 +268,15 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
             cameras = json.load(f)
         with open(color_map_path, "r") as f:
             color_map = json.load(f)
-            
+
         # Convert color map to a more usable format mapping specific rgb to instance_id and cat_id
-        color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+        # Support both dict format (Strawberry) and list format (NBV Stage2)
+        if isinstance(color_map, dict):
+            color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+        elif isinstance(color_map, list):
+            color_to_info = {tuple(v["color"]): v for v in color_map}
+        else:
+            raise ValueError(f"Unsupported color_map format: {type(color_map)}")
             
         # Модификация: бьём видео на куски по 5 кадров для увеличения числа сэмплов и экономии VRAM
         CHUNK_SIZE = 5
@@ -178,6 +345,16 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
             
     return dataset_dicts
 
+def register_nbv_stage2_datasets(dataset_dir: str, splits_file: str):
+    """Register NBV Stage2 datasets with proper categories."""
+    for split in ["train", "val", "test"]:
+        dataset_name = f"nbv_stage2_{split}"
+        DatasetCatalog.register(dataset_name, lambda s=split: get_nbv_stage2_dataset_dicts(dataset_dir, splits_file, s))
+        MetadataCatalog.get(dataset_name).set(
+            thing_classes=list(NBV_CATEGORIES.values()),
+            evaluator_type="nbv_stage2"
+        )
+
 def register_strawberry_datasets(dataset_dir: str, splits_file: str):
     for split in ["train", "val", "test"]:
         dataset_name = f"strawberry_{split}"
@@ -187,15 +364,57 @@ def register_strawberry_datasets(dataset_dir: str, splits_file: str):
             evaluator_type="strawberry"
         )
 
+def detect_dataset_type(dataset_dir: str) -> str:
+    """
+    Auto-detect dataset type by checking format of cameras.json and color_map.json.
+    Returns: "strawberry" or "nbv_stage2"
+    """
+    dataset_path = Path(dataset_dir)
+
+    # Find first sample directory
+    sample_dirs = sorted([d for d in dataset_path.iterdir() if d.is_dir() and d.name.startswith("sample_")])
+    if not sample_dirs:
+        raise ValueError(f"No sample directories found in {dataset_dir}")
+
+    sample_dir = sample_dirs[0]
+    cameras_path = sample_dir / "cameras.json"
+    color_map_path = sample_dir / "color_map.json"
+
+    if not cameras_path.exists() or not color_map_path.exists():
+        raise ValueError(f"Missing cameras.json or color_map.json in {sample_dir}")
+
+    with open(cameras_path, "r") as f:
+        cameras = json.load(f)
+    with open(color_map_path, "r") as f:
+        color_map = json.load(f)
+
+    # NBV Stage2: cameras is dict, color_map is list
+    # Strawberry: cameras is list, color_map is dict
+    if isinstance(cameras, dict) and isinstance(color_map, list):
+        return "nbv_stage2"
+    elif isinstance(cameras, list) and isinstance(color_map, dict):
+        return "strawberry"
+    else:
+        raise ValueError(f"Unknown dataset format: cameras={type(cameras)}, color_map={type(color_map)}")
+
 
 # -------------------------------------------------------------------------
 # 2. Dataset Mapper
 # -------------------------------------------------------------------------
 class StrawberryDatasetMapper:
-    def __init__(self, cfg, is_train: bool):
+    def __init__(self, cfg, is_train: bool, dataset_type: str = "strawberry"):
         self.cfg = cfg
         self.is_train = is_train
-        self.num_classes = NUM_CLASSES
+        self.dataset_type = dataset_type
+
+        # Select appropriate categories based on dataset type
+        if dataset_type == "nbv_stage2":
+            self.categories = NBV_CATEGORIES
+            self.num_classes = len(NBV_CATEGORIES)
+        else:
+            self.categories = CATEGORIES
+            self.num_classes = NUM_CLASSES
+
         self.size_divisibility = cfg.INPUT.SIZE_DIVISIBILITY
         self.num_frames = cfg.INPUT.SAMPLING_FRAME_NUM
         
@@ -275,10 +494,14 @@ class StrawberryDatasetMapper:
                 gt_classes = []
                 gt_masks = []
                 instance_ids = []
-                
-                for color, info in color_map.items():
-                    if info["category_id"] not in CATEGORIES:
-                        continue 
+
+                # Support both dict and list formats for color_map
+                color_map_items = color_map.items() if isinstance(color_map, dict) else [(tuple(v["color"]), v) for v in color_map]
+
+                for color, info in color_map_items:
+                    # Check if category_id is valid for current dataset
+                    if info["category_id"] not in self.categories:
+                        continue
                     px = (mr == color[0]) & (mg == color[1]) & (mb == color[2])
                     if np.any(px):
                         gt_classes.append(info["category_id"])
@@ -1124,13 +1347,21 @@ class MyTrainer(DefaultTrainer):
     def build_train_loader(cls, cfg):
         dataset_name = cfg.DATASETS.TRAIN[0]
         dataset_dict = DatasetCatalog.get(dataset_name)
-        mapper = StrawberryDatasetMapper(cfg, is_train=True)
+
+        # Detect dataset type from dataset name
+        dataset_type = "nbv_stage2" if "nbv_stage2" in dataset_name else "strawberry"
+
+        mapper = StrawberryDatasetMapper(cfg, is_train=True, dataset_type=dataset_type)
         return build_detection_train_loader(cfg, mapper=mapper, dataset=dataset_dict)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
         dataset_dict = DatasetCatalog.get(dataset_name)
-        mapper = StrawberryDatasetMapper(cfg, is_train=False)
+
+        # Detect dataset type from dataset name
+        dataset_type = "nbv_stage2" if "nbv_stage2" in dataset_name else "strawberry"
+
+        mapper = StrawberryDatasetMapper(cfg, is_train=False, dataset_type=dataset_type)
         return build_detection_test_loader(cfg, mapper=mapper, dataset=dataset_dict)
 
     @classmethod
@@ -1196,15 +1427,26 @@ def setup(args):
         i += 1
         
     cfg.merge_from_list(clean_opts)
-    
-    # Defaults for Strawberry ODIN execution
+
+    # Auto-detect dataset type and register accordingly
     dataset_dir = args.dataset_dir
     splits_file = args.splits_file
-    register_strawberry_datasets(dataset_dir, splits_file)
-    
-    cfg.DATASETS.TRAIN = ("strawberry_train",)
-    cfg.DATASETS.TEST = ("strawberry_val",)
-    cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = NUM_CLASSES
+
+    dataset_type = detect_dataset_type(dataset_dir)
+    print(f"Detected dataset type: {dataset_type}")
+
+    if dataset_type == "nbv_stage2":
+        register_nbv_stage2_datasets(dataset_dir, splits_file)
+        cfg.DATASETS.TRAIN = ("nbv_stage2_train",)
+        cfg.DATASETS.TEST = ("nbv_stage2_val",)
+        cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = len(NBV_CATEGORIES)
+        print(f"Using NBV Stage2 dataset with {len(NBV_CATEGORIES)} classes")
+    else:  # strawberry
+        register_strawberry_datasets(dataset_dir, splits_file)
+        cfg.DATASETS.TRAIN = ("strawberry_train",)
+        cfg.DATASETS.TEST = ("strawberry_val",)
+        cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES = NUM_CLASSES
+        print(f"Using Strawberry dataset with {NUM_CLASSES} classes")
     
     # Конфигурация размера батча и кол-ва кадров
     cfg.SOLVER.IMS_PER_BATCH = args.batch_size

@@ -152,11 +152,17 @@ def unproject_frame(depth: np.ndarray, rgb: np.ndarray, mask: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def build_pointcloud(sample_path: Path, cameras: list, color_map: dict,
+def build_pointcloud(sample_path: Path, cameras: list, color_map,
                      stride: int, max_points: int,
                      mode: str = "plant") -> np.ndarray:
 
-    color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+    # Support both dict format (Strawberry) and list format (NBV Stage2)
+    if isinstance(color_map, dict):
+        color_to_info = {tuple(v["color"]): v for v in color_map.values()}
+    elif isinstance(color_map, list):
+        color_to_info = {tuple(v["color"]): v for v in color_map}
+    else:
+        raise ValueError(f"Unsupported color_map format: {type(color_map)}")
 
     chunks = []
     for cam in cameras:
@@ -183,50 +189,6 @@ def build_pointcloud(sample_path: Path, cameras: list, color_map: dict,
 
         chunk = unproject_frame(depth, rgb, mask, fx, fy, cx, cy, R, t,
                                 color_to_info, stride=stride, mode=mode)
-        chunks.append(chunk)
-        print(f"  Frame {fi:2d}: {len(chunk):>8,} pts")
-
-    if not chunks:
-        return np.zeros((0, 8), dtype=np.float32)
-
-    pts = np.concatenate(chunks, axis=0)
-
-    if len(pts) > max_points:
-        idx = np.random.choice(len(pts), max_points, replace=False)
-        pts = pts[idx]
-        print(f"  Downsampled to {max_points:,}")
-
-    return pts
-
-
-    color_to_info = {tuple(v["color"]): v for v in color_map.values()}
-
-    chunks = []
-    for cam in cameras:
-        fi   = cam["frame_index"]
-        name = f"{fi:05d}"
-
-        depth_p = sample_path / "depth" / (name + ".npy")
-        rgb_p   = sample_path / "rgb"   / (name + ".png")
-        mask_p  = sample_path / "masks" / (name + ".png")
-
-        if not depth_p.exists() or not rgb_p.exists():
-            print(f"  [skip] frame {fi}: missing files")
-            continue
-
-        depth = np.load(str(depth_p))                              # (H,W) float32
-        rgb   = np.array(Image.open(rgb_p).convert("RGB"))        # (H,W,3) uint8
-        mask  = np.array(Image.open(mask_p).convert("RGB")) \
-                if mask_p.exists() else np.zeros_like(rgb)
-
-        intr  = cam["intrinsics"]
-        fx, fy, cx, cy = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
-        R = quat_to_rotmat(*cam["rotation"])
-        t = np.array(cam["position"], dtype=np.float64)
-
-        chunk = unproject_frame(depth, rgb, mask, fx, fy, cx, cy, R, t,
-                                color_to_info, stride=stride,
-                                only_bush=only_bush)
         chunks.append(chunk)
         print(f"  Frame {fi:2d}: {len(chunk):>8,} pts")
 
@@ -285,7 +247,7 @@ def compact_float_array(arr: np.ndarray, precision: int = 4) -> str:
     return "new Float32Array([" + ",".join(f"{v:.{precision}f}" for v in arr) + "])"
 
 
-def build_html(pts: np.ndarray, cameras: list, color_map: dict,
+def build_html(pts: np.ndarray, cameras: list, color_map,
                sample_name: str) -> str:
 
     N = len(pts)
@@ -299,7 +261,11 @@ def build_html(pts: np.ndarray, cameras: list, color_map: dict,
 
     # ── Build instance info for legend ─────────────────────────────────────
     instance_info = {}
-    for k, v in color_map.items():
+
+    # Support both dict and list formats for color_map
+    color_map_items = color_map.items() if isinstance(color_map, dict) else enumerate(color_map)
+
+    for k, v in color_map_items:
         cat = v["category_id"]
         col = SEG_PALETTE.get(cat, SEG_PALETTE[-1])
         instance_info[str(v["instance_id"])] = {

@@ -1,9 +1,11 @@
-#%% [markdown]
-# # Обучение ODIN на синтетическом датасете Strawberry Multi-view
-# Этот скрипт настраивает окружение (собирает CUDA ядра и тяжелые зависимости) 
-# в изолированном виртуальном окружении и запускает обучение.
+# %% [markdown]
+# # # Обучение ODIN на синтетическом датасете Strawberry Multi-view
+# # Этот скрипт настраивает окружение (собирает CUDA ядра и тяжелые зависимости) 
+# # в изолированном виртуальном окружении и запускает обучение.
+# 
+# 
 
-#%% [code]
+# %%
 import os
 import shutil
 # Чистим старое окружение перед запуском (запрос пользователя)
@@ -26,12 +28,16 @@ CONFIG = {
     "M2F_WEIGHTS_PATH": "my_odin/models/model_final_5c90d4.pkl",
 }
 
-#%% [markdown]
-# ## 1. Создание виртуального окружения (VENV) и установка зависимостей
-# Kaggle предоставляет базовый контейнер, но мы создадим виртуальное окружение, 
-# чтобы точно контролировать версии PyTorch (2.2.0), CUDA (12.1) и NumPy.
 
-#%% [code]
+
+# %% [markdown]
+# # ## 1. Создание виртуального окружения (VENV) и установка зависимостей
+# # Kaggle предоставляет базовый контейнер, но мы создадим виртуальное окружение, 
+# # чтобы точно контролировать версии PyTorch (2.2.0), CUDA (12.1) и NumPy.
+# 
+# 
+
+# %%
 # 1. Создаем venv (даже если ensurepip нет, структура папок создастся)
 if not os.path.exists("venv"):
     print("Устанавливаю Python 3.10...")
@@ -169,8 +175,6 @@ def install_odin_dependencies():
     # 5. ODIN requirements + ninja, fvcore, iopath
     print("\n5. Installing ODIN requirements...")
     run_in_venv(["pip", "install", "-q", "-r", req_path], env=venv_env)
-    # Фикс: откатываем transformers до версии, совместимой с Torch 2.2.0, чтобы не было ошибки "PyTorch not found"
-    run_in_venv(["pip", "install", "-q", "transformers==4.38.2"], env=venv_env)
     run_in_venv(["pip", "install", "-q", "ninja", "fvcore", "iopath"], env=venv_env)
 
     # 6. Detectron2
@@ -265,11 +269,7 @@ def download_weights():
 install_odin_dependencies()
 download_weights()
 
-#%% [markdown]
-# ## 3. Запуск обучения (my_train_odin.py)
-# Теперь запустим обучение, используя наш venv-python интерпретатор напрямую.
-
-#%% [code]
+# %%
 # ── Диагностика датасета (запускается перед обучением) ────────────────────────
 import json, os
 from pathlib import Path
@@ -304,7 +304,9 @@ if os.path.exists(SPLITS_FILE):
             print(f"  Пробую путь '{p2}': {'✓' if p2.exists() else '✗'}")
             print(f"  Пробую путь '{p3}': {'✓' if p3.exists() else '✗'}")
 
-#%% [code]
+
+
+# %%
 import shutil
 
 def sync_previous_output():
@@ -367,14 +369,136 @@ train_cmd = [
     'MODEL.WEIGHTS', CONFIG["ODIN_WEIGHTS_PATH"],
     'OUTPUT_DIR', './output',
     'SOLVER.AMP.ENABLED', 'True',
-    'MODEL.MASK_FORMER.DEC_LAYERS', '4',
-    'MODEL.BAYESIAN_SAMPLES', '5', # Включаем байесовскую оценку (5 сэмплов)
+    
+    # SWAG ПАРАМЕТРЫ (собираем статистику весов predictor)
+    'MODEL.BAYESIAN_TYPE', 'swag',  # Включаем SWAG
+    'MODEL.BAYESIAN_SAMPLES', '10',  # Детерминированный eval во время training (быстро)
+    'MODEL.BAYESIAN_INFERENCE_DURING_TRAINING', 'True',  # Не использовать SWAG sampling во время eval
+    'MODEL.SWAG.START_EPOCH', '5',  # Начинаем собирать статистику с 10 эпохи
+    'MODEL.SWAG.UPDATE_FREQ', '5',  # Обновляем каждые 5 итераций
+    'MODEL.SWAG.MAX_MODELS', '10',  # Храним последние 20 снимков весов predictor
+    'MODEL.SWAG.RANK', '20',  # Ранг для low-rank covariance
+    'MODEL.SWAG.NO_COV_MAT', 'False',  # Используем low-rank (не только diagonal)
 ]
 
-print("Starting training script...")
+print("Starting SWAG training...")
+print("Note: SWAG collects predictor weights only (not entire model)")
+print("      Eval during training uses deterministic inference (fast)")
 # Используем run_in_venv с пробросом venv_env, чтобы окружение было полностью корректным
 venv_env = make_venv_env()
 run_in_venv(train_cmd, env=venv_env)
 
-#%% [markdown]
-# Вывод результатов (метрики) сохраняется в `output/metrics_comparison.csv`
+# %% [markdown]
+# # Вывод результатов (метрики) сохраняется в `output/metrics_comparison.csv`
+# 
+
+# %% [markdown]
+# # ## Байесовские режимы inference (выбор типа uncertainty estimation)
+# 
+# Теперь ODIN поддерживает три режима байесовского вывода:
+# 
+# 1. **"none"** - Детерминированный inference (без оценки неопределенности)
+# 2. **"mc_dropout"** - MC Dropout (включает dropout во время inference)
+# 3. **"swag"** - SWAG (Stochastic Weight Averaging-Gaussian)
+# 
+# Для выбора режима используйте параметр `MODEL.BAYESIAN_TYPE`.
+
+# %%
+# # ═══════════════════════════════════════════════════════════════════════════════
+# # ПРИМЕР 1: Детерминированный inference (без uncertainty estimation)
+# # ═══════════════════════════════════════════════════════════════════════════════
+
+# train_cmd_deterministic = [
+#     VENV_PYTHON, "my_odin/my_train_odin.py",
+#     "--config-file", CONFIG_FILE,
+#     "--num-gpus", "1",
+#     "--eval-only",  # Только inference, без обучения
+#     "--dataset_dir", DATASET_DIR,
+#     "--splits_file", SPLITS_FILE,
+    
+#     # Config overrides
+#     'MODEL.WEIGHTS', './output/model_final.pth',  # Путь к обученной модели
+#     'MODEL.BAYESIAN_TYPE', 'none',  # Детерминированный режим
+#     'MODEL.BAYESIAN_SAMPLES', '1',  # Один проход
+#     'OUTPUT_DIR', './output',
+# ]
+
+# # ═══════════════════════════════════════════════════════════════════════════════
+# # ПРИМЕР 2: MC Dropout inference (исправленная реализация с активным dropout)
+# # ═══════════════════════════════════════════════════════════════════════════════
+
+# train_cmd_mc_dropout = [
+#     VENV_PYTHON, "my_odin/my_train_odin.py",
+#     "--config-file", CONFIG_FILE,
+#     "--num-gpus", "1",
+#     "--eval-only",
+#     "--dataset_dir", DATASET_DIR,
+#     "--splits_file", SPLITS_FILE,
+    
+#     # Config overrides
+#     'MODEL.WEIGHTS', './output/model_final.pth',
+#     'MODEL.BAYESIAN_TYPE', 'mc_dropout',  # MC Dropout режим
+#     'MODEL.BAYESIAN_SAMPLES', '10',  # 10 стохастических проходов
+#     'MODEL.MASK_FORMER.DROPOUT', '0.1',  # Dropout rate (по умолчанию 0.1)
+#     'OUTPUT_DIR', './output',
+# ]
+
+# # ═══════════════════════════════════════════════════════════════════════════════
+# # ПРИМЕР 3: SWAG inference (требует обучения с SWAG)
+# # ═══════════════════════════════════════════════════════════════════════════════
+
+# # Сначала обучаем с SWAG (собираем статистику весов)
+# train_cmd_swag_training = [
+#     VENV_PYTHON, "my_odin/my_train_odin.py",
+#     "--config-file", CONFIG_FILE,
+#     "--num-gpus", "1",
+#     "--resume",
+#     "--dataset_dir", DATASET_DIR,
+#     "--splits_file", SPLITS_FILE,
+#     "--num_epochs", "20",
+    
+#     # Config overrides
+#     'MODEL.WEIGHTS', CONFIG["ODIN_WEIGHTS_PATH"],
+#     'MODEL.BAYESIAN_TYPE', 'swag',  # Включаем SWAG
+#     'MODEL.SWAG.START_EPOCH', '10',  # Начинаем собирать статистику с 10 эпохи
+#     'MODEL.SWAG.UPDATE_FREQ', '5',  # Обновляем каждые 5 итераций
+#     'MODEL.SWAG.MAX_MODELS', '20',  # Храним последние 20 снимков весов
+#     'MODEL.SWAG.RANK', '20',  # Ранг для low-rank covariance
+#     'MODEL.SWAG.NO_COV_MAT', 'False',  # Используем low-rank (не только diagonal)
+#     'OUTPUT_DIR', './output',
+# ]
+
+# # Затем inference с SWAG
+# train_cmd_swag_inference = [
+#     VENV_PYTHON, "my_odin/my_train_odin.py",
+#     "--config-file", CONFIG_FILE,
+#     "--num-gpus", "1",
+#     "--eval-only",
+#     "--dataset_dir", DATASET_DIR,
+#     "--splits_file", SPLITS_FILE,
+    
+#     # Config overrides
+#     'MODEL.WEIGHTS', './output/model_final.pth',  # Чекпоинт с SWAG статистикой
+#     'MODEL.BAYESIAN_TYPE', 'swag',
+#     'MODEL.BAYESIAN_SAMPLES', '10',  # 10 сэмплов из SWAG posterior
+#     'MODEL.SWAG.SCALE', '1.0',  # Масштаб для sampling (можно варьировать)
+#     'OUTPUT_DIR', './output',
+# ]
+
+# # ═══════════════════════════════════════════════════════════════════════════════
+# # ЗАПУСК (раскомментируйте нужный вариант)
+# # ═══════════════════════════════════════════════════════════════════════════════
+
+# # Вариант 1: Детерминированный
+# # run_in_venv(train_cmd_deterministic, env=make_venv_env())
+
+# # Вариант 2: MC Dropout
+# # run_in_venv(train_cmd_mc_dropout, env=make_venv_env())
+
+# # Вариант 3: SWAG (сначала обучение, потом inference)
+# # run_in_venv(train_cmd_swag_training, env=make_venv_env())
+# # run_in_venv(train_cmd_swag_inference, env=make_venv_env())
+
+# print("Примеры команд готовы! Раскомментируйте нужный вариант для запуска.")
+
+
