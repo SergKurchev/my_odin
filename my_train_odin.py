@@ -1102,6 +1102,7 @@ class MyTrainer(DefaultTrainer):
         self.swag_model = None
         bayesian_type = getattr(cfg.MODEL, "BAYESIAN_TYPE", "none")
         if bayesian_type == "swag":
+            logger = logging.getLogger("odin_strawberry")
             logger.info("Initializing SWAG wrapper for predictor (transformer decoder)...")
             no_cov_mat = getattr(cfg.MODEL.SWAG, "NO_COV_MAT", False)
             max_num_models = getattr(cfg.MODEL.SWAG, "MAX_MODELS", 20)
@@ -1301,6 +1302,7 @@ class MyTrainer(DefaultTrainer):
                                 logger = logging.getLogger("odin_strawberry")
                                 logger.info(f">>> SWAG: Collected {self.swag_model.n_models} predictor weight snapshots <<<")
 
+            logger = logging.getLogger("odin_strawberry")
             logger.info("Adding SWAG hook for weight statistics collection...")
             all_hooks.append(SWAGHook(self.swag_model, self.cfg, dataset_len, self.cfg.SOLVER.IMS_PER_BATCH))
 
