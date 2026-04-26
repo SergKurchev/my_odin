@@ -60,11 +60,11 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 # -------------------------------------------------------------------------
 def quat_to_rotmat(x, y, z, w):
     """Convert quaternion (x, y, z, w) to 3x3 rotation matrix."""
-    # Ensure normalization for safety
-    q = np.array([x, y, z, w], dtype=np.float64)
+    # Ensure normalization for safety - use float32 consistently
+    q = np.array([x, y, z, w], dtype=np.float32)
     q /= (np.linalg.norm(q) + 1e-12)
     x, y, z, w = q
-    
+
     R = np.array([
         [1 - 2*(y*y + z*z),   2*(x*y - z*w),     2*(x*z + y*w)],
         [2*(x*y + z*w),       1 - 2*(x*x + z*z),  2*(y*z - x*w)],
