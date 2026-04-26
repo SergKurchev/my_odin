@@ -209,8 +209,8 @@ class SWAG(nn.Module):
         """
         state = super(SWAG, self).state_dict(destination, prefix, keep_vars)
 
-        # Add SWAG-specific state
-        state[prefix + 'n_models'] = self.n_models
+        # Add SWAG-specific state (wrap in tensor for Detectron2 compatibility)
+        state[prefix + 'n_models'] = torch.tensor(self.n_models, dtype=torch.int64)
 
         return state
 
@@ -222,9 +222,14 @@ class SWAG(nn.Module):
             state_dict: Dictionary with SWAG statistics
             strict: Whether to strictly enforce key matching
         """
-        # Extract n_models if present
+        # Extract n_models if present (unwrap from tensor)
         if 'n_models' in state_dict:
-            self.n_models = state_dict.pop('n_models')
+            n_models_value = state_dict.pop('n_models')
+            # Handle both tensor and int (for backward compatibility)
+            if isinstance(n_models_value, torch.Tensor):
+                self.n_models = int(n_models_value.item())
+            else:
+                self.n_models = int(n_models_value)
 
         # Load buffers and base model
         super(SWAG, self).load_state_dict(state_dict, strict=strict)
