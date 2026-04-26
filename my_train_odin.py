@@ -221,6 +221,8 @@ def get_nbv_stage2_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                 img_h = int(round(first_intr["cy"] * 2))
 
                 record = {
+                    "file_name": file_names[0],
+                    "image_id": f"{sid}_part{part_id}",
                     "file_names": file_names,
                     "depth_file_names": depth_file_names,
                     "masks_file_names": masks_file_names,
@@ -228,7 +230,8 @@ def get_nbv_stage2_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     "width": img_w,
                     "intrinsics": intrinsics,
                     "poses": poses,
-                    "color_to_info": color_to_info,
+                    "length": len(file_names),
+                    "color_map": color_to_info,
                     "sample_id": sid,
                     "part_id": part_id,
                 }

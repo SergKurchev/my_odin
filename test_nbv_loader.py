@@ -60,19 +60,19 @@ try:
         print(f"  Num frames: {len(first_chunk['file_names'])}")
         print(f"  Image size: {first_chunk['width']}x{first_chunk['height']}")
 
-        # Check color_to_info mapping
-        color_to_info = first_chunk['color_to_info']
-        print(f"\n  Color map entries: {len(color_to_info)}")
+        # Check color_map mapping
+        color_map = first_chunk['color_map']
+        print(f"\n  Color map entries: {len(color_map)}")
 
         # Analyze class distribution
         class_ids = set()
-        for color, info in color_to_info.items():
+        for color, info in color_map.items():
             class_ids.add(info['category_id'])
 
         print(f"  Unique class IDs in this chunk: {sorted(class_ids)}")
         print(f"\n  Class mapping examples:")
 
-        for color, info in list(color_to_info.items())[:5]:
+        for color, info in list(color_map.items())[:5]:
             class_id = info['category_id']
             class_name = NBV_CATEGORIES.get(class_id, "UNKNOWN")
             print(f"    Color {color} -> class {class_id} ({class_name})")
@@ -80,7 +80,7 @@ try:
         # Check all chunks for class distribution
         all_class_ids = set()
         for chunk in dataset_dicts:
-            for color, info in chunk['color_to_info'].items():
+            for color, info in chunk['color_map'].items():
                 all_class_ids.add(info['category_id'])
 
         print(f"\n=== Overall Statistics ===")
