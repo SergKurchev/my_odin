@@ -501,8 +501,8 @@ class StrawberryDatasetMapper:
             is_white = (rr > 220) & (gg > 220) & (bb > 220)
             is_black = (rr < 20) & (gg < 20) & (bb < 20)
             depth[is_white | is_black] = 0
-            
-            depths.append(torch.as_tensor(depth))
+
+            depths.append(torch.as_tensor(depth, dtype=torch.float32))
             
             # Intrinsics Scaling
             K = intrinsics_list[idx].copy()
