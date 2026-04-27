@@ -66,6 +66,36 @@ import ipdb
 st = ipdb.set_trace
 
 
+# -------------------------------------------------------------------------
+# Custom Checkpointer for SWAG compatibility
+# -------------------------------------------------------------------------
+class SWAGCompatibleCheckpointer(DetectionCheckpointer):
+    """
+    Custom checkpointer that handles SWAG state with int values.
+    Converts int values to tensors before loading to avoid Detectron2 errors.
+    """
+    def _load_model(self, checkpoint):
+        """
+        Override to convert int values (like n_models) to tensors before loading.
+        """
+        if "model" in checkpoint:
+            # Convert any int values in the checkpoint to tensors
+            self._convert_ints_to_tensors(checkpoint["model"])
+        return super()._load_model(checkpoint)
+
+    def _convert_ints_to_tensors(self, state_dict):
+        """
+        Recursively convert int/float values to tensors in state_dict.
+        """
+        for key, value in list(state_dict.items()):
+            if isinstance(value, int):
+                state_dict[key] = torch.tensor(value, dtype=torch.int64)
+            elif isinstance(value, float):
+                state_dict[key] = torch.tensor(value, dtype=torch.float32)
+            elif isinstance(value, dict):
+                self._convert_ints_to_tensors(value)
+
+
 class OneCycleLr_D2(torch.optim.lr_scheduler.OneCycleLR):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -124,7 +154,7 @@ class Trainer(DefaultTrainer):
         )
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
-        self.checkpointer = DetectionCheckpointer(
+        self.checkpointer = SWAGCompatibleCheckpointer(
             # Assume you want to save checkpoints together with logs/statistics
             model,
             cfg.OUTPUT_DIR,
