@@ -1351,16 +1351,23 @@ class MyTrainer(DefaultTrainer):
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
         """
-        Переопределяем планировщик, чтобы увеличить Warmup (разминку) для стабильности.
+        Переопределяем планировщик, чтобы настроить Warmup (разминку) для стабильности.
+        Warmup можно настроить через cfg.SOLVER.WARMUP_ITERS или cfg.WARMUP_RATIO.
         """
         from detectron2.solver import build_lr_scheduler
-        
-        # Увеличиваем Warmup до 1500 шагов для мягкого рестарта (итерация сейчас ~1150)
+
+        # Настраиваем Warmup через ratio (процент от MAX_ITER) или абсолютное значение
         cfg.defrost()
-        cfg.SOLVER.WARMUP_ITERS = 1500
-        cfg.SOLVER.WARMUP_FACTOR = 0.01
+
+        # Если задан WARMUP_RATIO (процент от MAX_ITER), используем его
+        if hasattr(cfg, 'WARMUP_RATIO'):
+            warmup_iters = int(cfg.MAX_ITER * cfg.WARMUP_RATIO)
+            cfg.SOLVER.WARMUP_ITERS = warmup_iters
+        # Иначе используем значение из cfg.SOLVER.WARMUP_ITERS (может быть переопределено через аргументы)
+
+        cfg.SOLVER.WARMUP_FACTOR = 0.01  # Начальный LR = BASE_LR * WARMUP_FACTOR
         cfg.freeze()
-        
+
         return build_lr_scheduler(cfg, optimizer)
 
     @classmethod
@@ -1526,6 +1533,11 @@ def setup(args):
     cfg.TEST.EVAL_PERIOD = eval_period
 
     cfg.SOLVER.BASE_LR = args.lr
+
+    # Warmup configuration
+    if args.warmup_ratio is not None:
+        cfg.WARMUP_RATIO = args.warmup_ratio  # Will be used in build_lr_scheduler
+
     cfg.DATALOADER.NUM_WORKERS = 4 
     
     cfg.INPUT.SAMPLING_FRAME_NUM = args.num_frames
@@ -1584,6 +1596,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
+    parser.add_argument("--warmup_ratio", type=float, default=None, help="Warmup ratio (0.0-1.0) of total iterations. 0.0 = no warmup, 0.1 = 10%% warmup. If not set, uses default warmup iters.")
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
     parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
     parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")

@@ -359,11 +359,12 @@ train_cmd = [
     "--max_time", "6",       # Авто-остановка через 6 часов (чтобы успеть сохранить веса)
     
     # ПАРАМЕТРЫ РЕСУРСОВ (Memory optimization)
-    "--image_size", "640",    
+    "--image_size", "640",
     "--batch_size", "1",
     "--num_frames", "5",        # 5 кадров при 640px могут потребовать много VRAM
     "--lr", "0.00005",
-    
+    "--warmup_ratio", "0.0",    # 0.0 = no warmup (start with max LR immediately), 0.1 = 10% warmup
+
     # ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ (Config Overrides)
     # Важно: эти параметры БЕЗ черточек должны идти в самом конце списка
     'MODEL.WEIGHTS', CONFIG["ODIN_WEIGHTS_PATH"],
