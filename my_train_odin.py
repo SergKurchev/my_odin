@@ -802,7 +802,16 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     # Создаем карту меток для всех точек сразу (фон = -1)
                     point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
-                    
+
+                    # DEBUG: Print pred_classes values
+                    if not hasattr(self, '_pred_classes_printed'):
+                        print(f"\n=== PRED CLASSES DEBUG ===")
+                        print(f"pred_classes raw values: {pred_classes[:min(5, len(pred_classes))]}")
+                        print(f"pred_classes after -1: {[int(c) - 1 for c in pred_classes[:min(5, len(pred_classes))]]}")
+                        print(f"Expected: 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
+                        print(f"=== END DEBUG ===\n")
+                        self._pred_classes_printed = True
+
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
@@ -848,6 +857,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             gt_m = instances.gt_masks.numpy() # [N, H, W]
                             gt_c = instances.gt_classes.numpy() # [N]
                             gt_ids = instances.instance_ids.numpy() # [N]
+
+                            # DEBUG: Print GT classes values
+                            if not hasattr(self, '_gt_classes_printed'):
+                                print(f"\n=== GT CLASSES DEBUG ===")
+                                print(f"gt_classes raw values: {gt_c[:min(5, len(gt_c))]}")
+                                print(f"Expected: 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
+                                print(f"=== END DEBUG ===\n")
+                                self._gt_classes_printed = True
+
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0
                                 inst_gt_frame[m_mask] = int(gt_ids[inst_i])
