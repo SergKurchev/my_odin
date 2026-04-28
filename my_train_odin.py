@@ -662,6 +662,9 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 predictive_entropy = _out['uncertainty']['predictive_entropy']  # [B, Q]
                 mean_entropy = predictive_entropy.mean().item()
                 self.uncertainties.append(mean_entropy)
+                if not hasattr(self, '_uncertainty_source_printed'):
+                    print(f"[UNCERTAINTY] Using Bayesian uncertainty: {mean_entropy:.6f}")
+                    self._uncertainty_source_printed = True
             elif 'pred_logits' in _out:
                 # Fallback: use single-pass entropy (deterministic inference)
                 logits = _out['pred_logits']  # Shape: (B, num_queries, num_classes)
@@ -669,6 +672,13 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)  # (B, num_queries)
                 mean_entropy = entropy.mean().item()
                 self.uncertainties.append(mean_entropy)
+                if not hasattr(self, '_uncertainty_source_printed'):
+                    print(f"[UNCERTAINTY] Using deterministic entropy: {mean_entropy:.6f}")
+                    self._uncertainty_source_printed = True
+            else:
+                if not hasattr(self, '_uncertainty_missing_printed'):
+                    print(f"[UNCERTAINTY] WARNING: No uncertainty or pred_logits in output! Keys: {_out.keys()}")
+                    self._uncertainty_missing_printed = True
 
             # 4. Check if we need visualization for this sample
             is_target = any(ts in sample_id for ts in target_samples)
