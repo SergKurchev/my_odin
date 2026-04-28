@@ -851,8 +851,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0
                                 inst_gt_frame[m_mask] = int(gt_ids[inst_i])
-                                # ВАЖНО: gt_classes в ODIN 1-индексированные (как и в color_map.json), вычитаем 1 для 0-индексации
-                                cat_gt_frame[m_mask] = int(gt_c[inst_i]) - 1
+                                cat_gt_frame[m_mask] = int(gt_c[inst_i])
 
                     # 2. Проекция
                     X_cam =  (uu - cx) * Z_s / fx
