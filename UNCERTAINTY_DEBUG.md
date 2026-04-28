@@ -35,6 +35,51 @@ use_bayesian_inference = (
 )
 ```
 
+---
+
+## Problem: Wrong Colors in Visualization (Red→Green, Green→Orange, Orange→Background)
+
+**Symptom**: Predicted categories show wrong colors - everything shifted by +1.
+
+## Root Cause
+
+**NUM_CLASSES mismatch!** The config file has `NUM_CLASSES: 18` (for ScanNet), but Strawberry dataset has only 3 classes.
+
+In `odin_model.py:1456-1468`:
+```python
+labels = torch.arange(num_classes, device=self.device)  # [0, 1, ..., 17] for num_classes=18
+# ...
+result_3d = {
+    "pred_classes": labels_per_image + 1,  # Adds +1 to make 1-indexed
+}
+```
+
+**What happens:**
+1. Model trained on 18 classes predicts class indices 0-17
+2. ODIN adds +1 → outputs 1-18
+3. Visualization subtracts -1 → back to 0-17
+4. But Strawberry only has classes 0, 1, 2!
+5. If model predicts class 1 (thinking it's class 0 after +1), visualization shows class 0 (correct by accident)
+6. If model predicts class 2, visualization shows class 1 → **color shift!**
+
+## Solution
+
+**CRITICAL**: Override `NUM_CLASSES` in training command:
+
+```python
+train_cmd = [
+    # ... other args ...
+    'MODEL.SEM_SEG_HEAD.NUM_CLASSES', '3',  # ← MUST SET TO 3 FOR STRAWBERRY!
+]
+```
+
+This ensures:
+- `labels = torch.arange(3)` → [0, 1, 2]
+- `labels_per_image + 1` → [1, 2, 3]
+- Visualization `-1` → [0, 1, 2] ✓ Correct!
+
+---
+
 ## Uncertainty Formulas
 
 Based on **"What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?"** (Kendall & Gal, NIPS 2017):
@@ -96,9 +141,24 @@ Mutual information stats: min=0.001234, max=0.123456, mean=0.045678
 In `kaggle_my_train_odin.py`:
 
 ```python
-'MODEL.BAYESIAN_TYPE', 'swag',  # or 'mc_dropout' or 'none'
-'MODEL.BAYESIAN_SAMPLES', '10',  # Number of samples (must be > 1)
-'MODEL.BAYESIAN_INFERENCE_DURING_TRAINING', 'True',  # Enable during training eval
+train_cmd = [
+    # ... paths and basic args ...
+    
+    # CRITICAL: Set correct number of classes!
+    'MODEL.SEM_SEG_HEAD.NUM_CLASSES', '3',  # Strawberry has 3 classes
+    
+    # Bayesian inference
+    'MODEL.BAYESIAN_TYPE', 'swag',  # or 'mc_dropout' or 'none'
+    'MODEL.BAYESIAN_SAMPLES', '10',  # Number of samples (must be > 1)
+    'MODEL.BAYESIAN_INFERENCE_DURING_TRAINING', 'False',  # Faster eval
+    
+    # SWAG parameters
+    'MODEL.SWAG.START_EPOCH', '5',
+    'MODEL.SWAG.UPDATE_FREQ', '5',
+    'MODEL.SWAG.MAX_MODELS', '10',
+    'MODEL.SWAG.RANK', '20',
+    'MODEL.SWAG.NO_COV_MAT', 'False',
+]
 ```
 
 ## Expected Behavior
@@ -109,5 +169,7 @@ In `kaggle_my_train_odin.py`:
 
 ## Commits
 
+- `b7fd042`: Add debug output for GT and pred category values
+- `632d740`: Revert incorrect GT category indexing change
 - `5d5ee59`: Fix Bayesian inference logic and add detailed uncertainty debugging
 - Previous: Added uncertainty computation but it was never called

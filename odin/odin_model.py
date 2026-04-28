@@ -1432,6 +1432,15 @@ class ODIN(nn.Module):
         pred_cls: 100 X 19
         pred_masks: 100 X 5 X 480 X 640
         """
+        # DEBUG: Print shapes and num_classes
+        if not hasattr(self, '_inference_debug_printed'):
+            print(f"\n=== INFERENCE_SCANNET_GHOST DEBUG ===")
+            print(f"pred_cls shape: {pred_cls.shape}")
+            print(f"num_classes parameter: {num_classes}")
+            print(f"pred_cls actual classes: {pred_cls.shape[-1]}")
+            print(f"=== END DEBUG ===\n")
+            self._inference_debug_printed = True
+
         test_topk_per_image = self.cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES 
         if not self.cfg.MODEL.OPEN_VOCAB or self.cfg.NON_PARAM_SOFTMAX:
             scores = F.softmax(pred_cls, dim=-1)[:, :-1]
