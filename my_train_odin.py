@@ -1359,9 +1359,9 @@ class MyTrainer(DefaultTrainer):
         # Настраиваем Warmup через ratio (процент от MAX_ITER) или абсолютное значение
         cfg.defrost()
 
-        # Если задан WARMUP_RATIO (процент от MAX_ITER), используем его
+        # Если задан WARMUP_RATIO (процент от SOLVER.MAX_ITER), используем его
         if hasattr(cfg, 'WARMUP_RATIO'):
-            warmup_iters = int(cfg.MAX_ITER * cfg.WARMUP_RATIO)
+            warmup_iters = int(cfg.SOLVER.MAX_ITER * cfg.WARMUP_RATIO)
             cfg.SOLVER.WARMUP_ITERS = warmup_iters
         # Иначе используем значение из cfg.SOLVER.WARMUP_ITERS (может быть переопределено через аргументы)
 
