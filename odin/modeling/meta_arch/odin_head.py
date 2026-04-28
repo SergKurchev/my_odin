@@ -339,11 +339,13 @@ class ODINHead(nn.Module):
         Averages softmax probabilities and converts back to log-probabilities
         for compatibility with the rest of the codebase.
 
+        Also computes uncertainty metrics from the variance across samples.
+
         Args:
             all_outputs: List of prediction dictionaries from multiple forward passes
 
         Returns:
-            Averaged predictions
+            Averaged predictions with uncertainty metrics
         """
         # Use first output as template
         predictions = all_outputs[0]
@@ -352,10 +354,29 @@ class ODINHead(nn.Module):
         logits_stack = torch.stack([o['pred_logits'] for o in all_outputs])  # [S, B, Q, C]
 
         # Average probabilities (not logits)
-        avg_probs = torch.softmax(logits_stack, dim=-1).mean(dim=0)
+        probs_stack = torch.softmax(logits_stack, dim=-1)  # [S, B, Q, C]
+        avg_probs = probs_stack.mean(dim=0)  # [B, Q, C]
 
         # Convert back to log-probabilities
         predictions['pred_logits'] = torch.log(avg_probs + 1e-8)
+
+        # Compute uncertainty metrics from variance across samples
+        # 1. Predictive entropy (uncertainty in averaged prediction)
+        predictive_entropy = -torch.sum(avg_probs * torch.log(avg_probs + 1e-8), dim=-1)  # [B, Q]
+
+        # 2. Expected entropy (average uncertainty of individual predictions)
+        sample_entropies = -torch.sum(probs_stack * torch.log(probs_stack + 1e-8), dim=-1)  # [S, B, Q]
+        expected_entropy = sample_entropies.mean(dim=0)  # [B, Q]
+
+        # 3. Mutual information (epistemic uncertainty)
+        mutual_info = predictive_entropy - expected_entropy  # [B, Q]
+
+        # Store uncertainty metrics in predictions
+        predictions['uncertainty'] = {
+            'predictive_entropy': predictive_entropy,  # Total uncertainty
+            'expected_entropy': expected_entropy,      # Aleatoric (data) uncertainty
+            'mutual_information': mutual_info          # Epistemic (model) uncertainty
+        }
 
         # Average auxiliary outputs if present
         if "aux_outputs" in predictions:

@@ -656,8 +656,14 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             # 2. Parse and store prediction
             self.processed_preds[idx] = self._parse_pred(_out)
 
-            # 3. Calculate uncertainty (entropy) from pred_logits
-            if 'pred_logits' in _out:
+            # 3. Calculate uncertainty (entropy) from Bayesian samples or pred_logits
+            if 'uncertainty' in _out and 'predictive_entropy' in _out['uncertainty']:
+                # Use Bayesian uncertainty (from multiple samples)
+                predictive_entropy = _out['uncertainty']['predictive_entropy']  # [B, Q]
+                mean_entropy = predictive_entropy.mean().item()
+                self.uncertainties.append(mean_entropy)
+            elif 'pred_logits' in _out:
+                # Fallback: use single-pass entropy (deterministic inference)
                 logits = _out['pred_logits']  # Shape: (B, num_queries, num_classes)
                 probs = torch.softmax(logits, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)  # (B, num_queries)
