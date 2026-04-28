@@ -1459,6 +1459,18 @@ class MyTrainer(DefaultTrainer):
 
         # Hook to track last good checkpoint for NaN recovery
         class LastGoodCheckpointHook(hooks.HookBase):
+            def before_step(self):
+                # Save checkpoint every 50 iterations for NaN recovery
+                if self.trainer.iter > 0 and self.trainer.iter % 50 == 0:
+                    checkpoint_path = os.path.join(
+                        self.trainer.cfg.OUTPUT_DIR,
+                        f"model_recovery_{self.trainer.iter:07d}.pth"
+                    )
+                    self.trainer.checkpointer.save(f"model_recovery_{self.trainer.iter:07d}")
+                    self.trainer._trainer.last_good_checkpoint = checkpoint_path
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"[NaN RECOVERY] Saved recovery checkpoint: {checkpoint_path}")
+
             def after_step(self):
                 # Update last good checkpoint path after each successful checkpoint save
                 if self.trainer.iter % self.trainer.cfg.SOLVER.CHECKPOINT_PERIOD == 0:
