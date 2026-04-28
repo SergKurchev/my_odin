@@ -1105,47 +1105,144 @@ class Strawberry3DEvaluator(DatasetEvaluator):
 
 
 # -------------------------------------------------------------------------
-# 4. Trainer Override
+# 4. Trainer Override with NaN Recovery
 # -------------------------------------------------------------------------
 class AMPTrainerWithClipping(AMPTrainer):
-    def __init__(self, model, data_loader, optimizer, num_frames=1):
+    def __init__(self, model, data_loader, optimizer, num_frames=1,
+                 nan_recovery_enabled=True, nan_lr_scale=0.1, nan_recovery_iters=100):
         super().__init__(model, data_loader, optimizer)
         self.num_frames = num_frames
 
+        # NaN recovery parameters
+        self.nan_recovery_enabled = nan_recovery_enabled
+        self.nan_lr_scale = nan_lr_scale  # Scale factor when NaN detected (0.1 = reduce by 10x)
+        self.nan_recovery_iters = nan_recovery_iters  # Iterations to recover LR
+
+        # State tracking
+        self.nan_recovery_active = False
+        self.nan_recovery_start_iter = 0
+        self.original_lrs = []  # Store original LRs for each param group
+        self.target_lrs = []
+
+        logger = logging.getLogger(__name__)
+        if self.nan_recovery_enabled:
+            logger.info(f"[NaN RECOVERY] Enabled: scale={nan_lr_scale}, recovery_iters={nan_recovery_iters}")
+
+    def _handle_nan_recovery(self):
+        """Handle NaN detection: reduce LR and start recovery process."""
+        logger = logging.getLogger(__name__)
+
+        if not self.nan_recovery_enabled:
+            raise RuntimeError("NaN detected but recovery is disabled!")
+
+        # Store original LRs if not already in recovery
+        if not self.nan_recovery_active:
+            self.original_lrs = [group['lr'] for group in self.optimizer.param_groups]
+            self.target_lrs = self.original_lrs.copy()
+
+        # Reduce LR immediately
+        for i, group in enumerate(self.optimizer.param_groups):
+            new_lr = self.original_lrs[i] * self.nan_lr_scale
+            group['lr'] = new_lr
+            logger.warning(f"[NaN RECOVERY] Param group {i}: LR {self.original_lrs[i]:.2e} → {new_lr:.2e} (reduced by {1/self.nan_lr_scale:.1f}x)")
+
+        # Activate recovery mode
+        self.nan_recovery_active = True
+        self.nan_recovery_start_iter = self.iter
+
+        logger.warning(f"[NaN RECOVERY] Started at iter {self.iter}. Will recover LR over {self.nan_recovery_iters} iterations.")
+
+    def _update_recovery_lr(self):
+        """Gradually increase LR back to original during recovery."""
+        if not self.nan_recovery_active:
+            return
+
+        iters_since_recovery = self.iter - self.nan_recovery_start_iter
+
+        if iters_since_recovery >= self.nan_recovery_iters:
+            # Recovery complete
+            for i, group in enumerate(self.optimizer.param_groups):
+                group['lr'] = self.target_lrs[i]
+
+            logger = logging.getLogger(__name__)
+            logger.info(f"[NaN RECOVERY] Complete at iter {self.iter}. LR restored to original values.")
+            self.nan_recovery_active = False
+            return
+
+        # Linear warmup from reduced LR to original LR
+        progress = iters_since_recovery / self.nan_recovery_iters
+
+        for i, group in enumerate(self.optimizer.param_groups):
+            reduced_lr = self.original_lrs[i] * self.nan_lr_scale
+            current_lr = reduced_lr + (self.target_lrs[i] - reduced_lr) * progress
+            group['lr'] = current_lr
+
+        # Log every 10 iterations during recovery
+        if iters_since_recovery % 10 == 0:
+            logger = logging.getLogger(__name__)
+            logger.info(f"[NaN RECOVERY] Progress: {iters_since_recovery}/{self.nan_recovery_iters} iters, "
+                       f"LR: {self.optimizer.param_groups[0]['lr']:.2e}")
+
     def run_step(self):
         """
-        Кастомный шаг обучения с поддержкой Gradient Clipping для AMP.
+        Кастомный шаг обучения с поддержкой Gradient Clipping для AMP и NaN recovery.
         """
         assert self.model.training, "[AMPTrainerWithClipping] model was not in training mode!"
-        
+
+        # Update LR if in recovery mode
+        self._update_recovery_lr()
+
         # Замеряем время загрузки данных
         start = time.perf_counter()
         data = next(self._data_loader_iter)
         data_time = time.perf_counter() - start
-        
-        # 1. Считаем потери внутри autocast
-        with torch.cuda.amp.autocast():
-            loss_dict = self.model(data)
-            if isinstance(loss_dict, torch.Tensor):
-                losses = loss_dict
-                loss_dict = {"total_loss": loss_dict}
+
+        try:
+            # 1. Считаем потери внутри autocast
+            with torch.cuda.amp.autocast():
+                loss_dict = self.model(data)
+                if isinstance(loss_dict, torch.Tensor):
+                    losses = loss_dict
+                    loss_dict = {"total_loss": loss_dict}
+                else:
+                    losses = sum(loss_dict.values())
+
+            # Check for NaN in losses
+            if not torch.isfinite(losses):
+                raise RuntimeError("NaN or Inf detected in loss!")
+
+            # 2. Обнуляем градиенты и делаем backward через scaler
+            self.optimizer.zero_grad()
+            self.grad_scaler.scale(losses).backward()
+
+            # 3. UNSSCALE перед CLIP_GRADIENTS (это ключевой момент для AMP)
+            self.grad_scaler.unscale_(self.optimizer)
+
+            # 4. Обрезаем градиенты (Gradient Clipping)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
+
+            # 5. Шагаем через scaler
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+
+        except RuntimeError as e:
+            if "NaN" in str(e) or "Inf" in str(e):
+                logger = logging.getLogger(__name__)
+                logger.error(f"[NaN RECOVERY] Caught error: {e}")
+
+                # Handle NaN recovery
+                self._handle_nan_recovery()
+
+                # Skip this batch and continue
+                logger.warning(f"[NaN RECOVERY] Skipping batch at iter {self.iter}")
+
+                # Create dummy loss_dict for logging
+                loss_dict = {"total_loss": torch.tensor(0.0)}
+                data_time = 0.0
             else:
-                losses = sum(loss_dict.values())
-        
-        # 2. Обнуляем градиенты и делаем backward через scaler
-        self.optimizer.zero_grad()
-        self.grad_scaler.scale(losses).backward()
-        
-        # 3. UNSSCALE перед CLIP_GRADIENTS (это ключевой момент для AMP)
-        self.grad_scaler.unscale_(self.optimizer)
-        
-        # 4. Обрезаем градиенты (Gradient Clipping)
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
-        
-        # 5. Шагаем через scaler
-        self.grad_scaler.step(self.optimizer)
-        self.grad_scaler.update()
-        
+                # Re-raise if not NaN-related
+                raise
+
         # Передаем и лоссы, и время загрузки данных
         self._write_metrics(loss_dict, data_time)
         
@@ -1196,7 +1293,13 @@ class MyTrainer(DefaultTrainer):
 
         # Используем наш кастомный трейнер с обрезкой градиентов
         if cfg.SOLVER.AMP.ENABLED:
-            self._trainer = AMPTrainerWithClipping(model, data_loader, optimizer, num_frames=cfg.INPUT.SAMPLING_FRAME_NUM)
+            self._trainer = AMPTrainerWithClipping(
+                model, data_loader, optimizer,
+                num_frames=cfg.INPUT.SAMPLING_FRAME_NUM,
+                nan_recovery_enabled=cfg.NAN_RECOVERY_ENABLED,
+                nan_lr_scale=cfg.NAN_LR_SCALE,
+                nan_recovery_iters=cfg.NAN_RECOVERY_ITERS
+            )
         else:
             # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится,
             # но сейчас используем только AMP
@@ -1585,14 +1688,19 @@ def setup(args):
         cfg.VISUALIZE_3D = True
         cfg.VISUALIZE_LOG_DIR = os.path.join(cfg.OUTPUT_DIR, "inference", "visualizations")
         os.makedirs(cfg.VISUALIZE_LOG_DIR, exist_ok=True)
-    
+
     # Gradient Clipping для стабильности (защита от NaN)
     cfg.SOLVER.CLIP_GRADIENTS.ENABLED = True
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE = "norm"
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 0.1 # Жесткая обрезка для стабильности
-    
+
     cfg.MAX_TIME_HOURS = getattr(args, "max_time", 11.5)
-    
+
+    # NaN recovery parameters
+    cfg.NAN_RECOVERY_ENABLED = getattr(args, "nan_recovery", False)
+    cfg.NAN_LR_SCALE = getattr(args, "nan_lr_scale", 0.1)
+    cfg.NAN_RECOVERY_ITERS = getattr(args, "nan_recovery_iters", 100)
+
     cfg.freeze()
     default_setup(cfg, args)
     setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="odin_strawberry")
@@ -1614,7 +1722,7 @@ if __name__ == "__main__":
     parser = default_argument_parser()
     parser.add_argument("--dataset_dir", type=str, required=True, help="Path to multiview_dataset")
     parser.add_argument("--splits_file", type=str, required=True, help="Path to splits.json")
-    
+
     # Параметры для управления из ноутбука
     parser.add_argument("--num_epochs", type=float, default=-1, help="Total epochs (overrides max_iter)")
     parser.add_argument("--max_iter", type=int, default=3000, help="Total iterations")
@@ -1628,7 +1736,12 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
     parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
     parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")
-    
+
+    # NaN recovery parameters
+    parser.add_argument("--nan_recovery", action="store_true", help="Enable automatic NaN recovery (reduce LR and gradually restore)")
+    parser.add_argument("--nan_lr_scale", type=float, default=0.1, help="LR scale factor when NaN detected (default: 0.1 = reduce by 10x)")
+    parser.add_argument("--nan_recovery_iters", type=int, default=100, help="Iterations to recover LR back to original (default: 100)")
+
     args = parser.parse_args()
     
     os.environ['TORCH_CUDNN_V8_API_DISABLED'] = '1'
