@@ -1024,11 +1024,15 @@ class ODIN(nn.Module):
             # for scannetpp we only want to export 200 labels from scannet200 for now
             if 'scannetpp' in batched_inputs[0]['dataset_name'] and self.cfg.JUST_DUMP_PREDS:
                 num_classes = 200
-            
+
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
+
+            # Save uncertainty before deleting outputs
+            uncertainty = outputs.get("uncertainty", None)
+
             del outputs
-                
+
             # Processing for ghost points
             if self.cfg.USE_GHOST_POINTS and decoder_3d:
                 processed_results = self.eval_ghost(
@@ -1036,6 +1040,17 @@ class ODIN(nn.Module):
                     scannet_gt_target_dicts, scannet_p2v, num_classes,
                     scannet_idxs, scannet_segments_batched
                 )
+
+                # Add uncertainty to processed results
+                if uncertainty is not None:
+                    for i, result in enumerate(processed_results):
+                        result["uncertainty"] = uncertainty
+
+                # Also add pred_logits for fallback uncertainty calculation
+                for i, result in enumerate(processed_results):
+                    if "uncertainty" not in result:
+                        result["pred_logits"] = mask_cls_results[i:i+1]
+
                 return processed_results
             
             # Normal Processing
