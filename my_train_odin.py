@@ -1109,7 +1109,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
 # -------------------------------------------------------------------------
 class AMPTrainerWithClipping(AMPTrainer):
     def __init__(self, model, data_loader, optimizer, num_frames=1,
-                 nan_recovery_enabled=True, nan_lr_scale=0.1, nan_recovery_iters=100):
+                 nan_recovery_enabled=True, nan_lr_scale=0.1, nan_recovery_iters=100,
+                 checkpointer=None, output_dir=None):
         super().__init__(model, data_loader, optimizer)
         self.num_frames = num_frames
 
@@ -1118,22 +1119,46 @@ class AMPTrainerWithClipping(AMPTrainer):
         self.nan_lr_scale = nan_lr_scale  # Scale factor when NaN detected (0.1 = reduce by 10x)
         self.nan_recovery_iters = nan_recovery_iters  # Iterations to recover LR
 
+        # Checkpoint management for NaN recovery
+        self.checkpointer = checkpointer
+        self.output_dir = output_dir
+        self.last_good_checkpoint = None  # Path to last checkpoint before NaN
+
         # State tracking
         self.nan_recovery_active = False
         self.nan_recovery_start_iter = 0
         self.original_lrs = []  # Store original LRs for each param group
         self.target_lrs = []
+        self.nan_count = 0  # Track consecutive NaN occurrences
 
         logger = logging.getLogger(__name__)
         if self.nan_recovery_enabled:
-            logger.info(f"[NaN RECOVERY] Enabled: scale={nan_lr_scale}, recovery_iters={nan_recovery_iters}")
+            logger.info(f"[NaN RECOVERY] Enabled: scale={nan_lr_scale}, recovery_iters={nan_recovery_iters}, checkpoint_restore=True")
 
     def _handle_nan_recovery(self):
-        """Handle NaN detection: reduce LR and start recovery process."""
+        """Handle NaN detection: restore checkpoint, reduce LR and start recovery process."""
         logger = logging.getLogger(__name__)
 
         if not self.nan_recovery_enabled:
             raise RuntimeError("NaN detected but recovery is disabled!")
+
+        self.nan_count += 1
+
+        # If too many consecutive NaNs, something is seriously wrong
+        if self.nan_count > 10:
+            logger.error(f"[NaN RECOVERY] Too many consecutive NaNs ({self.nan_count}). Aborting.")
+            raise RuntimeError(f"NaN recovery failed after {self.nan_count} attempts!")
+
+        # Try to restore from last good checkpoint
+        if self.checkpointer and self.last_good_checkpoint:
+            logger.warning(f"[NaN RECOVERY] Restoring model from last good checkpoint: {self.last_good_checkpoint}")
+            try:
+                checkpoint = self.checkpointer._load_file(self.last_good_checkpoint)
+                self.checkpointer._load_model(checkpoint)
+                logger.info(f"[NaN RECOVERY] Model weights restored successfully")
+            except Exception as e:
+                logger.error(f"[NaN RECOVERY] Failed to restore checkpoint: {e}")
+                logger.warning(f"[NaN RECOVERY] Continuing with current weights (risky!)")
 
         # Store original LRs if not already in recovery
         if not self.nan_recovery_active:
@@ -1225,6 +1250,9 @@ class AMPTrainerWithClipping(AMPTrainer):
             self.grad_scaler.step(self.optimizer)
             self.grad_scaler.update()
 
+            # Success! Reset NaN counter
+            self.nan_count = 0
+
         except RuntimeError as e:
             if "NaN" in str(e) or "Inf" in str(e):
                 logger = logging.getLogger(__name__)
@@ -1298,7 +1326,8 @@ class MyTrainer(DefaultTrainer):
                 num_frames=cfg.INPUT.SAMPLING_FRAME_NUM,
                 nan_recovery_enabled=cfg.NAN_RECOVERY_ENABLED,
                 nan_lr_scale=cfg.NAN_LR_SCALE,
-                nan_recovery_iters=cfg.NAN_RECOVERY_ITERS
+                nan_recovery_iters=cfg.NAN_RECOVERY_ITERS,
+                output_dir=cfg.OUTPUT_DIR
             )
         else:
             # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится,
@@ -1307,6 +1336,11 @@ class MyTrainer(DefaultTrainer):
 
         self.scheduler = self.build_lr_scheduler(cfg, optimizer)
         self.checkpointer = SWAGCompatibleCheckpointer(model, cfg.OUTPUT_DIR, trainer=weakref.proxy(self))
+
+        # Pass checkpointer to trainer for NaN recovery
+        if hasattr(self._trainer, 'checkpointer'):
+            self._trainer.checkpointer = self.checkpointer
+
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
         self.cfg = cfg
@@ -1420,6 +1454,22 @@ class MyTrainer(DefaultTrainer):
 
         all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, keep_last=2))
 
+        # Hook to track last good checkpoint for NaN recovery
+        class LastGoodCheckpointHook(hooks.HookBase):
+            def after_step(self):
+                # Update last good checkpoint path after each successful checkpoint save
+                if self.trainer.iter % self.trainer.cfg.SOLVER.CHECKPOINT_PERIOD == 0:
+                    checkpoint_path = os.path.join(
+                        self.trainer.cfg.OUTPUT_DIR,
+                        f"model_{self.trainer.iter:07d}.pth"
+                    )
+                    if os.path.exists(checkpoint_path) and hasattr(self.trainer._trainer, 'last_good_checkpoint'):
+                        self.trainer._trainer.last_good_checkpoint = checkpoint_path
+                        logger = logging.getLogger(__name__)
+                        logger.info(f"[NaN RECOVERY] Updated last good checkpoint: {checkpoint_path}")
+
+        all_hooks.append(LastGoodCheckpointHook())
+
         # Добавляем BestCheckpointer для сохранения лучшей модели по PQ (согласно протоколу)
         from detectron2.engine.hooks import BestCheckpointer
         all_hooks.append(
@@ -1506,16 +1556,29 @@ class MyTrainer(DefaultTrainer):
         """
         Запускаем инференс (валидацию) с использованием AMP (Mixed Precision).
         Это позволяет экономить память точно так же, как при обучении.
+
+        Если во время eval возникает NaN, пропускаем эту валидацию и продолжаем обучение.
         """
         # Принудительно очищаем кэш перед валидацией
         torch.cuda.empty_cache()
-        
-        # Оборачиваем инференс в autocast, если AMP включен в конфиге
-        if cfg.SOLVER.AMP.ENABLED:
-            with autocast():
+
+        try:
+            # Оборачиваем инференс в autocast, если AMP включен в конфиге
+            if cfg.SOLVER.AMP.ENABLED:
+                with autocast():
+                    return super().test(cfg, model, evaluators)
+            else:
                 return super().test(cfg, model, evaluators)
-        else:
-            return super().test(cfg, model, evaluators)
+        except RuntimeError as e:
+            if "NaN" in str(e):
+                logger = logging.getLogger("odin_strawberry")
+                logger.warning(f"[EVAL SKIP] NaN detected during evaluation: {e}")
+                logger.warning("[EVAL SKIP] Skipping this evaluation and continuing training...")
+                # Возвращаем пустой результат, чтобы не прерывать обучение
+                return {}
+            else:
+                # Если это не NaN ошибка, пробрасываем дальше
+                raise
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
