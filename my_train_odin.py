@@ -1150,6 +1150,7 @@ class AMPTrainerWithClipping(AMPTrainer):
             raise RuntimeError(f"NaN recovery failed after {self.nan_count} attempts!")
 
         # Try to restore from last good checkpoint
+        logger.info(f"[NaN RECOVERY DEBUG] checkpointer={self.checkpointer is not None}, last_good_checkpoint={self.last_good_checkpoint}")
         if self.checkpointer and self.last_good_checkpoint:
             logger.warning(f"[NaN RECOVERY] Restoring model from last good checkpoint: {self.last_good_checkpoint}")
             try:
@@ -1159,6 +1160,11 @@ class AMPTrainerWithClipping(AMPTrainer):
             except Exception as e:
                 logger.error(f"[NaN RECOVERY] Failed to restore checkpoint: {e}")
                 logger.warning(f"[NaN RECOVERY] Continuing with current weights (risky!)")
+        else:
+            if not self.checkpointer:
+                logger.warning(f"[NaN RECOVERY] No checkpointer available - cannot restore weights")
+            if not self.last_good_checkpoint:
+                logger.warning(f"[NaN RECOVERY] No last good checkpoint available - cannot restore weights")
 
         # Store original LRs if not already in recovery
         if not self.nan_recovery_active:
@@ -1319,6 +1325,9 @@ class MyTrainer(DefaultTrainer):
         if comm.get_world_size() > 1:
             model = DistributedDataParallel(model, device_ids=[comm.get_local_rank()])
 
+        self.scheduler = self.build_lr_scheduler(cfg, optimizer)
+        self.checkpointer = SWAGCompatibleCheckpointer(model, cfg.OUTPUT_DIR, trainer=weakref.proxy(self))
+
         # Используем наш кастомный трейнер с обрезкой градиентов
         if cfg.SOLVER.AMP.ENABLED:
             self._trainer = AMPTrainerWithClipping(
@@ -1327,19 +1336,13 @@ class MyTrainer(DefaultTrainer):
                 nan_recovery_enabled=cfg.NAN_RECOVERY_ENABLED,
                 nan_lr_scale=cfg.NAN_LR_SCALE,
                 nan_recovery_iters=cfg.NAN_RECOVERY_ITERS,
+                checkpointer=self.checkpointer,
                 output_dir=cfg.OUTPUT_DIR
             )
         else:
             # Для полноты добавим SimpleTrainer с теми же метриками, если понадобится,
             # но сейчас используем только AMP
             self._trainer = SimpleTrainer(model, data_loader, optimizer)
-
-        self.scheduler = self.build_lr_scheduler(cfg, optimizer)
-        self.checkpointer = SWAGCompatibleCheckpointer(model, cfg.OUTPUT_DIR, trainer=weakref.proxy(self))
-
-        # Pass checkpointer to trainer for NaN recovery
-        if hasattr(self._trainer, 'checkpointer'):
-            self._trainer.checkpointer = self.checkpointer
 
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
@@ -1463,7 +1466,7 @@ class MyTrainer(DefaultTrainer):
                         self.trainer.cfg.OUTPUT_DIR,
                         f"model_{self.trainer.iter:07d}.pth"
                     )
-                    if os.path.exists(checkpoint_path) and hasattr(self.trainer._trainer, 'last_good_checkpoint'):
+                    if os.path.exists(checkpoint_path):
                         self.trainer._trainer.last_good_checkpoint = checkpoint_path
                         logger = logging.getLogger(__name__)
                         logger.info(f"[NaN RECOVERY] Updated last good checkpoint: {checkpoint_path}")
