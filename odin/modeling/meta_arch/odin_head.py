@@ -221,18 +221,24 @@ class ODINHead(nn.Module):
         }
 
         # Determine if we should use Bayesian inference
-        # During training, only use Bayesian inference if explicitly enabled
+        bayesian_during_training = getattr(self.cfg.MODEL, "BAYESIAN_INFERENCE_DURING_TRAINING", False)
+
         use_bayesian_inference = (
-            not self.training and
             bayesian_type != "none" and
-            num_samples > 1
+            num_samples > 1 and
+            (not self.training or bayesian_during_training)
         )
 
-        # Override: disable Bayesian inference during training eval unless explicitly enabled
-        if self.training:
-            bayesian_during_training = getattr(self.cfg.MODEL, "BAYESIAN_INFERENCE_DURING_TRAINING", False)
-            if not bayesian_during_training:
-                use_bayesian_inference = False
+        # DEBUG: Print inference mode
+        if not hasattr(self, '_inference_mode_printed'):
+            print(f"\n=== BAYESIAN INFERENCE CONFIG ===")
+            print(f"self.training: {self.training}")
+            print(f"bayesian_type: {bayesian_type}")
+            print(f"num_samples: {num_samples}")
+            print(f"bayesian_during_training: {bayesian_during_training}")
+            print(f"use_bayesian_inference: {use_bayesian_inference}")
+            print(f"=== END CONFIG ===\n")
+            self._inference_mode_printed = True
 
         # Select inference method
         if use_bayesian_inference:
@@ -341,6 +347,20 @@ class ODINHead(nn.Module):
 
         Also computes uncertainty metrics from the variance across samples.
 
+        Bayesian Uncertainty Formulas (from "What Uncertainties Do We Need in Bayesian Deep Learning for Computer Vision?" Kendall & Gal, 2017):
+
+        1. Predictive Entropy (Total Uncertainty):
+           H[y|x,D] = -∑_c p̄(y=c|x,D) log p̄(y=c|x,D)
+           where p̄(y=c|x,D) = (1/T)∑_t p(y=c|x,θ_t) is the averaged prediction
+
+        2. Expected Entropy (Aleatoric/Data Uncertainty):
+           E_θ[H[y|x,θ]] = (1/T)∑_t [-∑_c p(y=c|x,θ_t) log p(y=c|x,θ_t)]
+           Average of individual prediction entropies
+
+        3. Mutual Information (Epistemic/Model Uncertainty):
+           I[y,θ|x,D] = H[y|x,D] - E_θ[H[y|x,θ]]
+           Difference between total and aleatoric uncertainty
+
         Args:
             all_outputs: List of prediction dictionaries from multiple forward passes
 
@@ -353,23 +373,52 @@ class ODINHead(nn.Module):
         # Stack and average logits
         logits_stack = torch.stack([o['pred_logits'] for o in all_outputs])  # [S, B, Q, C]
 
+        # DEBUG: Print shapes and statistics
+        print(f"\n=== UNCERTAINTY DEBUG ===")
+        print(f"Number of samples: {len(all_outputs)}")
+        print(f"Logits stack shape: {logits_stack.shape}")  # [S, B, Q, C]
+        print(f"Logits stack stats: min={logits_stack.min():.4f}, max={logits_stack.max():.4f}, mean={logits_stack.mean():.4f}")
+
         # Average probabilities (not logits)
         probs_stack = torch.softmax(logits_stack, dim=-1)  # [S, B, Q, C]
+        print(f"Probs stack shape: {probs_stack.shape}")
+        print(f"Probs stack stats: min={probs_stack.min():.4f}, max={probs_stack.max():.4f}, mean={probs_stack.mean():.4f}")
+
+        # Check variance across samples
+        probs_variance = probs_stack.var(dim=0)  # [B, Q, C]
+        print(f"Probs variance shape: {probs_variance.shape}")
+        print(f"Probs variance stats: min={probs_variance.min():.6f}, max={probs_variance.max():.6f}, mean={probs_variance.mean():.6f}")
+
         avg_probs = probs_stack.mean(dim=0)  # [B, Q, C]
+        print(f"Avg probs shape: {avg_probs.shape}")
+        print(f"Avg probs stats: min={avg_probs.min():.4f}, max={avg_probs.max():.4f}, mean={avg_probs.mean():.4f}")
 
         # Convert back to log-probabilities
         predictions['pred_logits'] = torch.log(avg_probs + 1e-8)
 
         # Compute uncertainty metrics from variance across samples
         # 1. Predictive entropy (uncertainty in averaged prediction)
+        # H[y|x,D] = -∑_c p̄_c log p̄_c
         predictive_entropy = -torch.sum(avg_probs * torch.log(avg_probs + 1e-8), dim=-1)  # [B, Q]
+        print(f"\nPredictive entropy shape: {predictive_entropy.shape}")
+        print(f"Predictive entropy stats: min={predictive_entropy.min():.6f}, max={predictive_entropy.max():.6f}, mean={predictive_entropy.mean():.6f}")
 
         # 2. Expected entropy (average uncertainty of individual predictions)
+        # E_θ[H[y|x,θ]] = (1/T)∑_t H[y|x,θ_t]
         sample_entropies = -torch.sum(probs_stack * torch.log(probs_stack + 1e-8), dim=-1)  # [S, B, Q]
+        print(f"Sample entropies shape: {sample_entropies.shape}")
+        print(f"Sample entropies stats: min={sample_entropies.min():.6f}, max={sample_entropies.max():.6f}, mean={sample_entropies.mean():.6f}")
+
         expected_entropy = sample_entropies.mean(dim=0)  # [B, Q]
+        print(f"Expected entropy shape: {expected_entropy.shape}")
+        print(f"Expected entropy stats: min={expected_entropy.min():.6f}, max={expected_entropy.max():.6f}, mean={expected_entropy.mean():.6f}")
 
         # 3. Mutual information (epistemic uncertainty)
+        # I[y,θ|x,D] = H[y|x,D] - E_θ[H[y|x,θ]]
         mutual_info = predictive_entropy - expected_entropy  # [B, Q]
+        print(f"Mutual information shape: {mutual_info.shape}")
+        print(f"Mutual information stats: min={mutual_info.min():.6f}, max={mutual_info.max():.6f}, mean={mutual_info.mean():.6f}")
+        print(f"=== END DEBUG ===\n")
 
         # Store uncertainty metrics in predictions
         predictions['uncertainty'] = {
