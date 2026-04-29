@@ -282,7 +282,7 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
 
     # ── Encode point cloud as flat typed arrays ────────────────────────────
     has_pred = (pts.shape[1] >= 10)
-    
+
     if N > 0:
         xs   = pts[:, 0].astype(np.float32)
         ys   = pts[:, 1].astype(np.float32)
@@ -292,9 +292,24 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
         bs   = np.clip(pts[:, 5], 0, 255).astype(np.uint8)
         insts = pts[:, 6].astype(np.int32)
         cats = pts[:, 7].astype(np.int32)
+
+        # DEBUG: Print GT category values
+        print(f"\n=== [DEBUG STEP 5] GT CATEGORIES in build_html ===")
+        print(f"cats (GT) unique values: {np.unique(cats)}")
+        print(f"Expected: [-1, 0, 1, 2] where 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
+        print(f"SEG_PALETTE mapping: {SEG_PALETTE}")
+        print(f"=== END DEBUG STEP 5 ===\n")
+
         if has_pred:
             insts_pred = pts[:, 8].astype(np.int32)
             cats_pred = pts[:, 9].astype(np.int32)
+
+            # DEBUG: Print Pred category values
+            print(f"\n=== [DEBUG STEP 6] PRED CATEGORIES in build_html ===")
+            print(f"cats_pred unique values: {np.unique(cats_pred)}")
+            print(f"Expected: [-1, 0, 1, 2] where 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
+            print(f"SEG_PALETTE will map: 0→red, 1→green, 2→orange")
+            print(f"=== END DEBUG STEP 6 ===\n")
     else:
         xs = ys = zs = np.zeros(0, np.float32)
         rs = gs = bs = np.zeros(0, np.uint8)

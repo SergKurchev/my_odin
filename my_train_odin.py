@@ -844,20 +844,28 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
 
                     # DEBUG: Print pred_classes values
-                    if not hasattr(self, '_pred_classes_printed'):
-                        print(f"\n=== PRED CLASSES DEBUG ===")
-                        print(f"pred_classes raw values: {pred_classes[:min(5, len(pred_classes))]}")
-                        print(f"pred_classes after -1: {[int(c) - 1 for c in pred_classes[:min(5, len(pred_classes))]]}")
-                        print(f"Expected: 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
-                        print(f"=== END DEBUG ===\n")
-                        self._pred_classes_printed = True
+                    print(f"\n=== [DEBUG STEP 1] PRED CLASSES for {sample_id} ===")
+                    print(f"pred_classes raw values: {pred_classes}")
+                    print(f"pred_classes unique: {np.unique(pred_classes)}")
+                    print(f"Expected from model (after +1 in prepare_3d): [1, 2, 3]")
+                    print(f"=== END DEBUG STEP 1 ===\n")
 
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
-                        point_pred_inst[m] = inst_idx # 0-indexed для виза
-                        # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1), поэтому вычитаем 1
-                        point_pred_cat[m] = int(pred_classes[inst_idx]) - 1
+                        if np.any(m):
+                            point_pred_inst[m] = inst_idx # 0-indexed для виза
+                            # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1), поэтому вычитаем 1
+                            cat_value = int(pred_classes[inst_idx]) - 1
+                            point_pred_cat[m] = cat_value
+
+                            # DEBUG: Print assignment for first few instances
+                            if inst_idx < 3:
+                                print(f"[DEBUG STEP 2] Instance {inst_idx}: pred_class={pred_classes[inst_idx]}, "
+                                      f"after -1: {cat_value}, num_points={np.sum(m)}")
+
+                    print(f"[DEBUG STEP 3] point_pred_cat unique values: {np.unique(point_pred_cat)}")
+                    print(f"Expected: [-1, 0, 1, 2] where 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)\n")
 
                 images = v_data.get("images", [])
                 depths = v_data.get("depths", [])
@@ -899,12 +907,12 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             gt_ids = instances.instance_ids.numpy() # [N]
 
                             # DEBUG: Print GT classes values
-                            if not hasattr(self, '_gt_classes_printed'):
-                                print(f"\n=== GT CLASSES DEBUG ===")
-                                print(f"gt_classes raw values: {gt_c[:min(5, len(gt_c))]}")
+                            if camera_idx == 0:  # Only print for first camera
+                                print(f"\n=== [DEBUG STEP 4] GT CLASSES for {sample_id}, camera {camera_idx} ===")
+                                print(f"gt_classes raw values: {gt_c}")
+                                print(f"gt_classes unique: {np.unique(gt_c)}")
                                 print(f"Expected: 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
-                                print(f"=== END DEBUG ===\n")
-                                self._gt_classes_printed = True
+                                print(f"=== END DEBUG STEP 4 ===\n")
 
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0

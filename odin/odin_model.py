@@ -1305,7 +1305,19 @@ class ODIN(nn.Module):
 
         masks = pred_masks > 0.
         mask_scores_per_image = (pred_masks.sigmoid().flatten(1) * masks.flatten(1)).sum(1) / (masks.flatten(1).sum(1) + 1e-6)
-               
+
+        # DEBUG: Print labels before and after +1
+        if not hasattr(self, '_prepare_3d_debug_printed'):
+            print(f"\n=== [DEBUG STEP 0] PREPARE_3D in odin_model.py ===")
+            print(f"labels_per_image BEFORE +1: {labels_per_image[:min(10, len(labels_per_image))].cpu().numpy()}")
+            print(f"labels_per_image unique BEFORE +1: {torch.unique(labels_per_image).cpu().numpy()}")
+            print(f"labels_per_image AFTER +1: {(labels_per_image + 1)[:min(10, len(labels_per_image))].cpu().numpy()}")
+            print(f"labels_per_image unique AFTER +1: {torch.unique(labels_per_image + 1).cpu().numpy()}")
+            print(f"Expected BEFORE +1: [0, 1, 2] (0=Ripe, 1=Unripe, 2=Half-ripe)")
+            print(f"Expected AFTER +1: [1, 2, 3]")
+            print(f"=== END DEBUG STEP 0 ===\n")
+            self._prepare_3d_debug_printed = True
+
         # add +1 to labels as mask3d evals from 1-18
         result_3d = {
             "pred_classes": labels_per_image + 1,
