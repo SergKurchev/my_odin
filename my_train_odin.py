@@ -847,7 +847,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     print(f"\n=== [DEBUG STEP 1] PRED CLASSES for {sample_id} ===")
                     print(f"pred_classes raw values: {pred_classes}")
                     print(f"pred_classes unique: {np.unique(pred_classes)}")
-                    print(f"Expected from model (after +1 in prepare_3d): [1, 2, 3]")
+                    print(f"Expected from model: [0, 1, 2] (strawberry dataset uses 0-indexed)")
                     print(f"=== END DEBUG STEP 1 ===\n")
 
                     # Если маски перекрываются, побеждает последняя
@@ -855,14 +855,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                         m = pred_masks[inst_idx] > 0
                         if np.any(m):
                             point_pred_inst[m] = inst_idx # 0-indexed для виза
-                            # ВАЖНО: pred_classes в ODIN уже приходят 1-индексированными (labels + 1), поэтому вычитаем 1
-                            cat_value = int(pred_classes[inst_idx]) - 1
+                            # ВАЖНО: для strawberry dataset pred_classes уже 0-индексированные (без +1 в prepare_3d)
+                            # поэтому используем напрямую без вычитания
+                            cat_value = int(pred_classes[inst_idx])
                             point_pred_cat[m] = cat_value
 
                             # DEBUG: Print assignment for first few instances
                             if inst_idx < 3:
                                 print(f"[DEBUG STEP 2] Instance {inst_idx}: pred_class={pred_classes[inst_idx]}, "
-                                      f"after -1: {cat_value}, num_points={np.sum(m)}")
+                                      f"assigned cat_value={cat_value}, num_points={np.sum(m)}")
 
                     print(f"[DEBUG STEP 3] point_pred_cat unique values: {np.unique(point_pred_cat)}")
                     print(f"Expected: [-1, 0, 1, 2] where 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)\n")
