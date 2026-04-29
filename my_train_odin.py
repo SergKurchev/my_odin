@@ -842,7 +842,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
 
     def evaluate(self):
         logging.getLogger(__name__).info("Evaluating 3D Instance metrics (Strawberry) on full validation set...")
-        
+
         # Free up some memory before processing
         gc.collect()
         torch.cuda.empty_cache()
@@ -1044,7 +1044,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
         matches = {}
         for i, (k, v) in enumerate(preds_dict.items()):
-            gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[i])
+            gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[k])
             matches[i] = {'gt': gt2pred, 'pred': pred2gt}
             
         num_preds = sum(len(v['pred_classes']) for v in preds_dict.values())
