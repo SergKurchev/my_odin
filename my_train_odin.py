@@ -1044,7 +1044,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # Мы не можем легко достать чистое время из d2.evaluation.evaluator тут, 
         # поэтому используем средние значения из логов если нужно, или просто считаем общую длительность evaluate
         # Однако, для точности в CSV запишем константы из последнего замера если доступно.
-        preds_dict = self.processed_preds
+        # CRITICAL FIX: Evaluator expects 1-indexed classes [1, 2, 3] but model returns 0-indexed [0, 1, 2]
+        # We need to convert pred_classes to 1-indexed for metrics, but keep original for visualization
+        preds_dict = {}
+        for idx, pred_data in self.processed_preds.items():
+            preds_dict[idx] = pred_data.copy()
+            # Add +1 to pred_classes for evaluator (expects 1-indexed)
+            if 'pred_classes' in preds_dict[idx]:
+                preds_dict[idx]['pred_classes'] = preds_dict[idx]['pred_classes'] + 1
+
         gts_dict = self.processed_gts
 
         # ========================================================================
@@ -1068,6 +1076,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             if 'pred_classes' in preds_dict[first_key]:
                 pred_classes = preds_dict[first_key]['pred_classes']
                 print(f"  pred_classes found! shape={pred_classes.shape}, unique={np.unique(pred_classes)}")
+                print(f"  EXPECTED: [1, 2, 3] (1-indexed for evaluator)")
             elif 'labels' in preds_dict[first_key]:
                 print(f"  ERROR: Found 'labels' instead of 'pred_classes'!")
                 print(f"  labels shape={preds_dict[first_key]['labels'].shape}")
