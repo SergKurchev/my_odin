@@ -207,9 +207,6 @@ class ODINHead(nn.Module):
         if isinstance(num_samples, str):
             num_samples = int(num_samples)
 
-        print(f"[DEBUG CONFIG] bayesian_type={bayesian_type} (type={type(bayesian_type)}), "
-              f"num_samples={num_samples} (type={type(num_samples)})")
-
         # Prepare forward pass arguments
         forward_kwargs = {
             'x': multi_scale_features,
@@ -240,18 +237,12 @@ class ODINHead(nn.Module):
             (not self.training or bayesian_during_training)
         )
 
-        # DEBUG: Print inference mode (ALWAYS print to catch changes)
-        print(f"\n[DEBUG BAYESIAN] use_bayesian={use_bayesian_inference}, training={self.training}, "
-              f"bayesian_during_training={bayesian_during_training}, "
-              f"bayesian_type={bayesian_type}, bayesian_samples={num_samples}, "
-              f"swag_model={hasattr(self, 'swag_model') and self.swag_model is not None}")
-
         # Additional check for SWAG model
         if use_bayesian_inference and bayesian_type == "swag":
             if not hasattr(self, 'swag_model') or self.swag_model is None:
-                print(f"[DEBUG BAYESIAN] WARNING: SWAG inference requested but swag_model is None!")
-            else:
-                print(f"[DEBUG BAYESIAN] SWAG model found, will use SWAG inference")
+                import logging
+                logging.getLogger(__name__).warning("SWAG inference requested but swag_model is None! Falling back to deterministic.")
+                use_bayesian_inference = False
 
         # Select inference method
         if use_bayesian_inference:

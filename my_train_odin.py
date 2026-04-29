@@ -1343,7 +1343,6 @@ class MyTrainer(DefaultTrainer):
                 # Attach SWAG model to the head for inference
                 model.sem_seg_head.swag_model = self.swag_model
                 logger.info(f"SWAG initialized for predictor: no_cov_mat={no_cov_mat}, max_models={max_num_models}")
-                print(f"[DEBUG SWAG INIT] SWAG model attached to sem_seg_head.swag_model")
             else:
                 logger.warning("Could not find predictor in model, SWAG disabled")
                 bayesian_type = "none"
@@ -1549,7 +1548,6 @@ class MyTrainer(DefaultTrainer):
                             if hasattr(model, 'sem_seg_head') and hasattr(model.sem_seg_head, 'predictor'):
                                 predictor = model.sem_seg_head.predictor
                                 self.swag_model.collect_model(predictor)
-                                print(f"[DEBUG SWAG] Collected model at iter {self.trainer.iter}, epoch {current_epoch:.2f}, n_models={self.swag_model.n_models}")
                             else:
                                 logger = logging.getLogger("odin_strawberry")
                                 logger.warning(">>> SWAG: Could not find predictor, skipping collection <<<")
@@ -1713,12 +1711,10 @@ def setup(args):
     # merge_from_list might not convert string '10' to int properly
     if isinstance(cfg.MODEL.BAYESIAN_SAMPLES, str):
         cfg.MODEL.BAYESIAN_SAMPLES = int(cfg.MODEL.BAYESIAN_SAMPLES)
-        print(f"[FIX] Converted BAYESIAN_SAMPLES from string to int: {cfg.MODEL.BAYESIAN_SAMPLES}")
 
     # Same for BAYESIAN_INFERENCE_DURING_TRAINING
     if isinstance(cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING, str):
         cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING = cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING.lower() in ['true', '1', 'yes']
-        print(f"[FIX] Converted BAYESIAN_INFERENCE_DURING_TRAINING from string to bool: {cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING}")
 
     # Auto-detect dataset type and register accordingly
     dataset_dir = args.dataset_dir
@@ -1762,18 +1758,7 @@ def setup(args):
     # Мы можем передавать это через opts, но для удобства добавим и сюда
     if hasattr(args, "bayesian_samples"):
         cfg.MODEL.BAYESIAN_SAMPLES = args.bayesian_samples
-        print(f"[DEBUG SETUP] Set cfg.MODEL.BAYESIAN_SAMPLES = {cfg.MODEL.BAYESIAN_SAMPLES} from args.bayesian_samples = {args.bayesian_samples}")
 
-    # Print all Bayesian config values for debugging
-    print(f"\n[DEBUG SETUP] Bayesian Configuration:")
-    print(f"  MODEL.BAYESIAN_TYPE = {cfg.MODEL.BAYESIAN_TYPE}")
-    print(f"  MODEL.BAYESIAN_SAMPLES = {cfg.MODEL.BAYESIAN_SAMPLES}")
-    print(f"  MODEL.BAYESIAN_INFERENCE_DURING_TRAINING = {cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING}")
-    if hasattr(cfg.MODEL, 'SWAG'):
-        print(f"  MODEL.SWAG.START_EPOCH = {cfg.MODEL.SWAG.START_EPOCH}")
-        print(f"  MODEL.SWAG.UPDATE_FREQ = {cfg.MODEL.SWAG.UPDATE_FREQ}")
-        print(f"  MODEL.SWAG.MAX_MODELS = {cfg.MODEL.SWAG.MAX_MODELS}")
-    print()
     if args.eval_period == 0:
         eval_period = steps_per_epoch * 2 # Каждые 2 эпохи по умолчанию
     else:
