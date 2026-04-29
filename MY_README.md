@@ -23,6 +23,22 @@
   - Разрешение каждого кадра: 640x640 px
   - `batch size` = 1
 
+---
+
+## 🟢 Активная обученная модель (Active Trained Model)
+
+> **Статус:** Модель обучена и готова к инференсу.
+
+**Ноутбук на Kaggle:** [`strawpick-segpoinnet-my-odin-bayes`](https://www.kaggle.com/code/sergeistwpk/strawpick-segpoinnet-my-odin-bayes/settings?scriptVersionId=315363362)
+
+**Коммит обучения:** `f9b4b1d` — на данном коммите была обучена модель.
+
+**Коммит инференса:** `f9b4b1d` — инференс модели также работает на данном коммите.
+
+> Оба процесса (обучение и инференс) верифицированы на коммите **`f9b4b1d`** (`Fix zero metrics: convert pred_classes to 1-indexed for evaluator`).
+
+---
+
 ## 1. Назначение `my_train_odin.py`
 Этот скрипт – адаптированная версия `train_odin.py`. В нём настроены:
 - Парсинг специфичной файловой структуры `multiview_dataset`.
