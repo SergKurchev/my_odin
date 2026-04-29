@@ -1577,6 +1577,9 @@ class MyTrainer(DefaultTrainer):
                 logger = logging.getLogger("odin_strawberry")
                 logger.warning(f"[EVAL SKIP] NaN detected during evaluation: {e}")
                 logger.warning("[EVAL SKIP] Skipping this evaluation and continuing training...")
+                # Ensure model is back in training mode
+                model.train()
+                logger.info("[EVAL SKIP] Model set back to training mode")
                 # Возвращаем пустой результат, чтобы не прерывать обучение
                 return {}
             else:
