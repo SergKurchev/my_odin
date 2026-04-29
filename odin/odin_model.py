@@ -1309,21 +1309,6 @@ class ODIN(nn.Module):
         # Check if this is strawberry dataset (uses 0-indexed labels)
         is_strawberry = batched_inputs is not None and 'strawberry' in batched_inputs.get('dataset_name', '')
 
-        # DEBUG: Print labels before and after +1
-        if not hasattr(self, '_prepare_3d_debug_printed'):
-            print(f"\n=== [DEBUG STEP 0] PREPARE_3D in odin_model.py ===")
-            print(f"Dataset: {batched_inputs.get('dataset_name', 'unknown') if batched_inputs else 'unknown'}")
-            print(f"Is strawberry dataset: {is_strawberry}")
-            print(f"labels_per_image BEFORE +1: {labels_per_image[:min(10, len(labels_per_image))].cpu().numpy()}")
-            print(f"labels_per_image unique BEFORE +1: {torch.unique(labels_per_image).cpu().numpy()}")
-            if not is_strawberry:
-                print(f"labels_per_image AFTER +1: {(labels_per_image + 1)[:min(10, len(labels_per_image))].cpu().numpy()}")
-                print(f"labels_per_image unique AFTER +1: {torch.unique(labels_per_image + 1).cpu().numpy()}")
-            print(f"Expected BEFORE +1: [0, 1, 2] (0=Ripe, 1=Unripe, 2=Half-ripe)")
-            print(f"Expected AFTER +1: [1, 2, 3] (for ScanNet) or [0, 1, 2] (for Strawberry)")
-            print(f"=== END DEBUG STEP 0 ===\n")
-            self._prepare_3d_debug_printed = True
-
         # add +1 to labels as mask3d evals from 1-18 (ScanNet convention)
         # BUT: strawberry dataset uses 0-indexed labels, so skip +1
         if is_strawberry:

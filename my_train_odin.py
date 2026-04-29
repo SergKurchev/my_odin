@@ -843,13 +843,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
 
-                    # DEBUG: Print pred_classes values
-                    print(f"\n=== [DEBUG STEP 1] PRED CLASSES for {sample_id} ===")
-                    print(f"pred_classes raw values: {pred_classes}")
-                    print(f"pred_classes unique: {np.unique(pred_classes)}")
-                    print(f"Expected from model: [0, 1, 2] (strawberry dataset uses 0-indexed)")
-                    print(f"=== END DEBUG STEP 1 ===\n")
-
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
                         m = pred_masks[inst_idx] > 0
@@ -857,16 +850,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             point_pred_inst[m] = inst_idx # 0-indexed для виза
                             # ВАЖНО: для strawberry dataset pred_classes уже 0-индексированные (без +1 в prepare_3d)
                             # поэтому используем напрямую без вычитания
-                            cat_value = int(pred_classes[inst_idx])
-                            point_pred_cat[m] = cat_value
-
-                            # DEBUG: Print assignment for first few instances
-                            if inst_idx < 3:
-                                print(f"[DEBUG STEP 2] Instance {inst_idx}: pred_class={pred_classes[inst_idx]}, "
-                                      f"assigned cat_value={cat_value}, num_points={np.sum(m)}")
-
-                    print(f"[DEBUG STEP 3] point_pred_cat unique values: {np.unique(point_pred_cat)}")
-                    print(f"Expected: [-1, 0, 1, 2] where 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)\n")
+                            point_pred_cat[m] = int(pred_classes[inst_idx])
 
                 images = v_data.get("images", [])
                 depths = v_data.get("depths", [])
@@ -906,14 +890,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                             gt_m = instances.gt_masks.numpy() # [N, H, W]
                             gt_c = instances.gt_classes.numpy() # [N]
                             gt_ids = instances.instance_ids.numpy() # [N]
-
-                            # DEBUG: Print GT classes values
-                            if camera_idx == 0:  # Only print for first camera
-                                print(f"\n=== [DEBUG STEP 4] GT CLASSES for {sample_id}, camera {camera_idx} ===")
-                                print(f"gt_classes raw values: {gt_c}")
-                                print(f"gt_classes unique: {np.unique(gt_c)}")
-                                print(f"Expected: 0=Ripe(red), 1=Unripe(green), 2=Half-ripe(orange)")
-                                print(f"=== END DEBUG STEP 4 ===\n")
 
                             for inst_i in range(len(instances)):
                                 m_mask = gt_m[inst_i] > 0
