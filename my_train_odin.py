@@ -885,15 +885,18 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 point_pred_cat = None
                 
                 if pred_masks is not None and len(pred_masks) > 0:
-                    num_pred_instances = pred_masks.shape[0]
-                    num_pts_total = pred_masks.shape[1]
+                    # ODIN модель возвращает pred_masks формы [NumPoints, NumInstances]
+                    # (см. odin_model.py: masks.flatten(1).permute(1, 0))
+                    # Поэтому axis-0 = точки, axis-1 = инстансы
+                    num_pts_total = pred_masks.shape[0]
+                    num_pred_instances = pred_masks.shape[1]
                     # Создаем карту меток для всех точек сразу (фон = -1)
                     point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
 
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
-                        m = pred_masks[inst_idx] > 0
+                        m = pred_masks[:, inst_idx] > 0  # выбираем столбец инстанса
                         if np.any(m):
                             point_pred_inst[m] = inst_idx # 0-indexed для виза
                             # ВАЖНО: для strawberry dataset pred_classes уже 0-индексированные (без +1 в prepare_3d)
