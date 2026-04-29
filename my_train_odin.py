@@ -877,7 +877,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 
                 # Подготовка предсказаний для быстрого доступа
                 pred_data = self.processed_preds[idx]
-                pred_masks = pred_data.get("pred_masks") # [NumValidPoints, NumInstances] — ODIN returns permute(1,0)
+                pred_masks = pred_data.get("pred_masks") # [NumInstances, NumPoints]
                 pred_classes = pred_data.get("pred_classes") # [NumInstances]
                 
                 num_pred_instances = 0
@@ -914,32 +914,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 div = self.cfg.INPUT.SIZE_DIVISIBILITY
                 H_padded = int(np.ceil(H_orig / div) * div)
                 W_padded = int(np.ceil(W_orig / div) * div)
-
-                # ----------------------------------------------------------------
-                # ВАЖНО: pred_masks содержит только valid-точки (те у которых depth > 0)
-                # В модели (prepare_3d): pred_masks = pred_masks[:, valids]
-                # → точки идут в порядке кадров: [кадр0_valid, кадр1_valid, ...]
-                # Нам нужно заранее посчитать, сколько valid-точек в каждом кадре,
-                # чтобы нарезать point_pred_inst/cat слайсами по кадрам.
-                # Валидность здесь: depth > 0.001 на полном (H_padded × W_padded) кадре,
-                # что точно соответствует логике prepare_3d.
-                # ----------------------------------------------------------------
-                frame_valid_counts = []  # сколько valid-точек в каждом кадре
-                for _cam_idx in range(len(depths)):
-                    Z_full_check = depths[_cam_idx].numpy()
-                    # Паддингуем depth до H_padded x W_padded как это делает модель
-                    H_d, W_d = Z_full_check.shape
-                    Z_pad = np.zeros((H_padded, W_padded), dtype=Z_full_check.dtype)
-                    Z_pad[:H_d, :W_d] = Z_full_check
-                    n_valid = int(np.sum(Z_pad > 0.001))
-                    frame_valid_counts.append(n_valid)
-
-                # Суммарное число valid-точек должно совпадать с pred_masks.shape[0]
-                total_valid_expected = sum(frame_valid_counts)
-                if pred_masks is not None and pred_masks.shape[0] != total_valid_expected:
-                    print(f"[VIS WARNING] pred_masks.shape[0]={pred_masks.shape[0]} != total_valid_pts={total_valid_expected}. "
-                          f"Per-frame: {frame_valid_counts}. Pred labels will be skipped.", flush=True)
-                    pred_masks = None  # safe fallback: skip pred labels for this sample
 
                 for camera_idx in range(len(images)):
                     img = images[camera_idx].numpy().transpose(1, 2, 0)
@@ -995,49 +969,18 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     inst_gt = inst_gt_frame[::stride, ::stride].ravel()[fv]
                     cat_gt = cat_gt_frame[::stride, ::stride].ravel()[fv]
 
-                    # Выборка масок Pred: нарезаем point_pred_inst/cat по смещению кадра
+                    # Выборка масок Pred через глобальную индексацию
                     inst_pred = np.full_like(inst_gt, -1)
                     cat_pred = np.full_like(cat_gt, -1)
-
+                    
                     if point_pred_inst is not None:
-                        # Смещение в массиве valid-точек для текущего кадра
-                        frame_offset = sum(frame_valid_counts[:camera_idx])
-                        n_valid_this_frame = frame_valid_counts[camera_idx]
-
-                        # Маска valid-пикселей на полном кадре (без stride, как в модели)
-                        Z_full_pad = np.zeros((H_padded, W_padded), dtype=Z_full.dtype)
-                        H_d, W_d = Z_full.shape
-                        Z_full_pad[:H_d, :W_d] = Z_full
-                        full_valid_mask = Z_full_pad > 0.001  # [H_padded, W_padded]
-
-                        # Маска valid-пикселей на subsampled кадре (stride)
-                        # «valid» уже вычислен выше как (Z_s > 0.001) & (Z_s < 5.0)
-                        # Для извлечения pred-меток используем полную маску без stride,
-                        # чтобы индексы совпадали с теми, что хранит модель.
-                        # Строим соответствие: для каждой strided-точки (row, col) находим
-                        # её позицию в отсортированном flat-списке full_valid_mask.
-                        # Это делается через argsort/searchsorted.
-                        full_valid_flat = full_valid_mask.ravel()           # [H_padded*W_padded]
-                        valid_pt_indices = np.where(full_valid_flat)[0]     # позиции valid-точек
-
-                        # Subsampled pixel linear indices (в системе H_padded x W_padded)
-                        rows_s = vv[valid].astype(np.int32)  # vv — на subsampled сетке
-                        cols_s = uu[valid].astype(np.int32)
-                        pix_linear = rows_s * W_padded + cols_s  # [N_valid_strided]
-
-                        # Найти позицию каждого strided-пикселя в отсортированном valid_pt_indices
-                        # searchsorted даёт индекс вставки; проверяем что пиксель реально valid
-                        insert_pos = np.searchsorted(valid_pt_indices, pix_linear)
-                        # Зажимаем за границу и проверяем точное совпадение
-                        insert_pos = np.clip(insert_pos, 0, len(valid_pt_indices) - 1)
-                        is_exact = valid_pt_indices[insert_pos] == pix_linear  # [N_valid_strided]
-
-                        # Глобальные индексы в point_pred_inst (с учётом frame_offset)
-                        global_pt_idx = frame_offset + insert_pos  # [N_valid_strided]
-                        safe_mask = is_exact & (global_pt_idx < len(point_pred_inst))
-
-                        inst_pred[safe_mask] = point_pred_inst[global_pt_idx[safe_mask]]
-                        cat_pred[safe_mask] = point_pred_cat[global_pt_idx[safe_mask]]
+                        rows = vv[valid].astype(np.int32)
+                        cols = uu[valid].astype(np.int32)
+                        global_indices = camera_idx * (H_padded * W_padded) + rows * W_padded + cols
+                        
+                        valid_global = global_indices < len(point_pred_inst)
+                        inst_pred[valid_global] = point_pred_inst[global_indices[valid_global]]
+                        cat_pred[valid_global] = point_pred_cat[global_indices[valid_global]]
                     
                     chunk = np.column_stack([pts_chunk, r, g, b, inst_gt, cat_gt, inst_pred, cat_pred]).astype(np.float32)
                     chunks.append(chunk)
