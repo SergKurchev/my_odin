@@ -838,16 +838,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 res[key] = pred[key].cpu().numpy()
             else:
                 res[key] = pred[key]
-
-        # CRITICAL FIX: Transpose pred_masks from [NumInstances, NumPoints] to [NumPoints, NumInstances]
-        # The evaluator expects masks in shape [NumPoints, NumInstances] (see evaluate_semantic_instance.py line 385)
-        if 'pred_masks' in res:
-            original_shape = res['pred_masks'].shape
-            res['pred_masks'] = res['pred_masks'].T  # Transpose
-            logger = logging.getLogger(__name__)
-            logger.info(f"[DEBUG PARSE_PRED] Transposed pred_masks from {original_shape} to {res['pred_masks'].shape}")
-            logger.info(f"[DEBUG PARSE_PRED] pred_classes shape: {res.get('pred_classes', []).shape}, pred_scores shape: {res.get('pred_scores', []).shape}")
-
         return res
 
     def evaluate(self):
@@ -1050,51 +1040,27 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # Однако, для точности в CSV запишем константы из последнего замера если доступно.
         preds_dict = self.processed_preds
         gts_dict = self.processed_gts
-
-        logger = logging.getLogger(__name__)
-        logger.info(f"[DEBUG EVAL] Total samples: preds={len(preds_dict)}, gts={len(gts_dict)}")
-        logger.info(f"[DEBUG EVAL] Pred keys: {list(preds_dict.keys())[:10]}")
-        logger.info(f"[DEBUG EVAL] GT keys: {list(gts_dict.keys())[:10]}")
-
+            
         # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
         matches = {}
-        for idx in preds_dict.keys():
-            if idx not in gts_dict:
-                logger.warning(f"[DEBUG EVAL] Missing GT for pred idx {idx}")
-                continue
-
-            pred = preds_dict[idx]
-            gt = gts_dict[idx]
-
-            logger.info(f"[DEBUG EVAL] Sample {idx}: pred_classes={len(pred.get('pred_classes', []))}, gt_classes={len(gt.get('class_labels', []))}")
-
-            gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(pred, gt)
-            matches[idx] = {'gt': gt2pred, 'pred': pred2gt}
-
+        for i, (k, v) in enumerate(preds_dict.items()):
+            gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[i])
+            matches[i] = {'gt': gt2pred, 'pred': pred2gt}
+            
         num_preds = sum(len(v['pred_classes']) for v in preds_dict.values())
         num_gts = sum(len(v['class_labels']) for v in gts_dict.values())
-        logger.info(f"Статистика оценки: Найдено предсказаний: {num_preds}, Всего GT инстансов: {num_gts}")
-
-        logger.info(f"[DEBUG EVAL] Total matches: {len(matches)}")
-        logger.info(f"[DEBUG EVAL] Sample match keys: {list(matches.keys())[:5]}")
+        logging.getLogger(__name__).info(f"Статистика оценки: Найдено предсказаний: {num_preds}, Всего GT инстансов: {num_gts}")
 
         # evaluate_matches возвращает кортеж из 5 массивов (has_gt, has_pred, y_true, y_score, hard_fn)
         # ВАЖНО: compute_ap принимает их в другом порядке: (has_gt, has_pred, y_score, y_true, hard_fn)
         eval_data = self.scannet_evaluator.evaluate_matches(matches)
         has_gt, has_pred, y_true, y_score, hard_fn = eval_data
-
-        logger.info(f"[DEBUG EVAL] eval_data shapes: has_gt={len(has_gt)}, has_pred={len(has_pred)}, y_true={len(y_true)}, y_score={len(y_score)}")
-        logger.info(f"[DEBUG EVAL] has_gt sum: {sum(has_gt)}, has_pred sum: {sum(has_pred)}")
-
+        
         aps = self.scannet_evaluator.compute_ap(has_gt, has_pred, y_score, y_true, hard_fn)
-        logger.info(f"[DEBUG EVAL] APs computed: {aps}")
-
         ap_results = self.scannet_evaluator.compute_averages(aps)
-        logger.info(f"[DEBUG EVAL] AP results: {ap_results}")
-
+        
         # 4. Расчет PQ, SQ, RQ через наш новый метод
         panoptic_results = self.scannet_evaluator.compute_panoptic_metrics(matches)
-        logger.info(f"[DEBUG EVAL] Panoptic results: {panoptic_results}")
         
         # 5. Формирование финального словаря метрик
         metrics = {
