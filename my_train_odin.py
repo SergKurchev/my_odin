@@ -621,7 +621,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self.cfg = cfg
         self._cpu_device = torch.device("cpu")
         self.multiplier = 1000 # Standard for instance encoding
-        
+        self._current_iter = 0  # Will be updated by hook before eval
+
         # Инциализируем реальный эвалюатор из ODIN (с поддержкой strawberry)
         self.scannet_evaluator = Scannet_Evaluator("strawberry")
         
@@ -648,6 +649,48 @@ class Strawberry3DEvaluator(DatasetEvaluator):
             start_t = time.perf_counter()
             idx = self._current_idx
             sample_id = str(_in.get("image_id", ""))
+
+            # Check if this is a target sample for visualization
+            is_target = any(ts in sample_id for ts in target_samples)
+
+            # Save raw model output for target samples
+            if is_target:
+                # Create output directory based on current iteration
+                current_iter = getattr(self, '_current_iter', 0)
+                raw_output_dir = os.path.join(self._output_dir, "odin_output", f"iter_{current_iter:07d}")
+                os.makedirs(raw_output_dir, exist_ok=True)
+
+                # Save raw output to pickle
+                output_file = os.path.join(raw_output_dir, f"{sample_id}_raw_output.pkl")
+
+                # Convert tensors to CPU for saving
+                output_cpu = {}
+                for key, value in _out.items():
+                    if isinstance(value, torch.Tensor):
+                        output_cpu[key] = value.cpu()
+                    elif isinstance(value, dict):
+                        output_cpu[key] = {}
+                        for k, v in value.items():
+                            if isinstance(v, torch.Tensor):
+                                output_cpu[key][k] = v.cpu()
+                            else:
+                                output_cpu[key][k] = v
+                    elif isinstance(value, list):
+                        output_cpu[key] = []
+                        for item in value:
+                            if isinstance(item, torch.Tensor):
+                                output_cpu[key].append(item.cpu())
+                            else:
+                                output_cpu[key].append(item)
+                    else:
+                        output_cpu[key] = value
+
+                import pickle
+                with open(output_file, 'wb') as f:
+                    pickle.dump(output_cpu, f)
+
+                logger = logging.getLogger(__name__)
+                logger.info(f"[SAVE RAW OUTPUT] Saved raw model output to {output_file}")
 
             # 1. Parse and store ground truth (3D masks/labels)
             # This is much lighter than the full _in (RGB, Depth, Large XYZ tensors)
@@ -1487,6 +1530,18 @@ class MyTrainer(DefaultTrainer):
                         logger.info(f"[NaN RECOVERY] Updated last good checkpoint: {checkpoint_path}")
 
         all_hooks.append(LastGoodCheckpointHook())
+
+        # Hook to update current iteration in evaluator before eval
+        class UpdateEvaluatorIterHook(hooks.HookBase):
+            def before_step(self):
+                # Update iteration in all evaluators before eval
+                if self.trainer.iter % self.trainer.cfg.TEST.EVAL_PERIOD == 0:
+                    if hasattr(self.trainer, '_evaluators') and self.trainer._evaluators:
+                        for evaluator in self.trainer._evaluators:
+                            if hasattr(evaluator, '_current_iter'):
+                                evaluator._current_iter = self.trainer.iter
+
+        all_hooks.append(UpdateEvaluatorIterHook())
 
         # Добавляем BestCheckpointer для сохранения лучшей модели по PQ (согласно протоколу)
         from detectron2.engine.hooks import BestCheckpointer
