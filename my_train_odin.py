@@ -644,53 +644,81 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         outputs: List of model outputs
         """
         target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
+        logger = logging.getLogger(__name__)
 
         for _in, _out in zip(inputs, outputs):
             start_t = time.perf_counter()
             idx = self._current_idx
             sample_id = str(_in.get("image_id", ""))
 
+            # DEBUG: Log sample_id for every sample
+            logger.info(f"[DEBUG] Processing sample_id: '{sample_id}' (idx={idx})")
+
             # Check if this is a target sample for visualization
             is_target = any(ts in sample_id for ts in target_samples)
+
+            # DEBUG: Log target check result
+            logger.info(f"[DEBUG] is_target={is_target} for sample_id='{sample_id}'")
+            logger.info(f"[DEBUG] target_samples={target_samples}")
 
             # Save raw model output for target samples
             if is_target:
                 # Create output directory based on current iteration
                 current_iter = getattr(self, '_current_iter', 0)
+                logger.info(f"[DEBUG] current_iter={current_iter}")
+
                 raw_output_dir = os.path.join(self._output_dir, "odin_output", f"iter_{current_iter:07d}")
+                logger.info(f"[DEBUG] raw_output_dir={raw_output_dir}")
+
                 os.makedirs(raw_output_dir, exist_ok=True)
+                logger.info(f"[DEBUG] Created directory: {raw_output_dir}")
 
                 # Save raw output to pickle
                 output_file = os.path.join(raw_output_dir, f"{sample_id}_raw_output.pkl")
+                logger.info(f"[DEBUG] output_file={output_file}")
 
-                # Convert tensors to CPU for saving
-                output_cpu = {}
-                for key, value in _out.items():
-                    if isinstance(value, torch.Tensor):
-                        output_cpu[key] = value.cpu()
-                    elif isinstance(value, dict):
-                        output_cpu[key] = {}
-                        for k, v in value.items():
-                            if isinstance(v, torch.Tensor):
-                                output_cpu[key][k] = v.cpu()
-                            else:
-                                output_cpu[key][k] = v
-                    elif isinstance(value, list):
-                        output_cpu[key] = []
-                        for item in value:
-                            if isinstance(item, torch.Tensor):
-                                output_cpu[key].append(item.cpu())
-                            else:
-                                output_cpu[key].append(item)
+                try:
+                    # Convert tensors to CPU for saving
+                    output_cpu = {}
+                    for key, value in _out.items():
+                        if isinstance(value, torch.Tensor):
+                            output_cpu[key] = value.cpu()
+                        elif isinstance(value, dict):
+                            output_cpu[key] = {}
+                            for k, v in value.items():
+                                if isinstance(v, torch.Tensor):
+                                    output_cpu[key][k] = v.cpu()
+                                else:
+                                    output_cpu[key][k] = v
+                        elif isinstance(value, list):
+                            output_cpu[key] = []
+                            for item in value:
+                                if isinstance(item, torch.Tensor):
+                                    output_cpu[key].append(item.cpu())
+                                else:
+                                    output_cpu[key].append(item)
+                        else:
+                            output_cpu[key] = value
+
+                    logger.info(f"[DEBUG] Converted output to CPU, keys: {list(output_cpu.keys())}")
+
+                    import pickle
+                    with open(output_file, 'wb') as f:
+                        pickle.dump(output_cpu, f)
+
+                    logger.info(f"[SAVE RAW OUTPUT] Saved raw model output to {output_file}")
+
+                    # Verify file was created
+                    if os.path.exists(output_file):
+                        file_size = os.path.getsize(output_file)
+                        logger.info(f"[DEBUG] File verified: {output_file} (size={file_size} bytes)")
                     else:
-                        output_cpu[key] = value
+                        logger.error(f"[DEBUG] File NOT found after saving: {output_file}")
 
-                import pickle
-                with open(output_file, 'wb') as f:
-                    pickle.dump(output_cpu, f)
-
-                logger = logging.getLogger(__name__)
-                logger.info(f"[SAVE RAW OUTPUT] Saved raw model output to {output_file}")
+                except Exception as e:
+                    logger.error(f"[ERROR] Failed to save raw output for {sample_id}: {e}")
+                    import traceback
+                    logger.error(f"[ERROR] Traceback: {traceback.format_exc()}")
 
             # 1. Parse and store ground truth (3D masks/labels)
             # This is much lighter than the full _in (RGB, Depth, Large XYZ tensors)
@@ -1536,10 +1564,35 @@ class MyTrainer(DefaultTrainer):
             def before_step(self):
                 # Update iteration in all evaluators before eval
                 if self.trainer.iter % self.trainer.cfg.TEST.EVAL_PERIOD == 0:
+                    # Try multiple ways to access evaluators
+                    evaluators = None
                     if hasattr(self.trainer, '_evaluators') and self.trainer._evaluators:
-                        for evaluator in self.trainer._evaluators:
+                        evaluators = self.trainer._evaluators
+                    elif hasattr(self.trainer, 'evaluators') and self.trainer.evaluators:
+                        evaluators = self.trainer.evaluators
+
+                    if evaluators:
+                        for evaluator in evaluators:
                             if hasattr(evaluator, '_current_iter'):
                                 evaluator._current_iter = self.trainer.iter
+                                logger = logging.getLogger(__name__)
+                                logger.info(f"[DEBUG] Updated evaluator._current_iter to {self.trainer.iter}")
+                    else:
+                        # Fallback: build evaluators and store them
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"[DEBUG] No evaluators found on trainer, building them now")
+                        evaluators = []
+                        for dataset_name in self.trainer.cfg.DATASETS.TEST:
+                            evaluator = self.trainer.build_evaluator(self.trainer.cfg, dataset_name)
+                            if isinstance(evaluator, list):
+                                evaluators.extend(evaluator)
+                            else:
+                                evaluators.append(evaluator)
+                        self.trainer._evaluators = evaluators
+                        for evaluator in evaluators:
+                            if hasattr(evaluator, '_current_iter'):
+                                evaluator._current_iter = self.trainer.iter
+                                logger.info(f"[DEBUG] Set evaluator._current_iter to {self.trainer.iter}")
 
         all_hooks.append(UpdateEvaluatorIterHook())
 
@@ -1634,6 +1687,22 @@ class MyTrainer(DefaultTrainer):
         """
         # Принудительно очищаем кэш перед валидацией
         torch.cuda.empty_cache()
+
+        # Update _current_iter in evaluators if they exist
+        # This is a backup in case the hook didn't run
+        if evaluators:
+            from detectron2.engine import get_event_storage
+            try:
+                storage = get_event_storage()
+                current_iter = storage.iter
+                for evaluator in evaluators:
+                    if hasattr(evaluator, '_current_iter'):
+                        evaluator._current_iter = current_iter
+                        logger = logging.getLogger(__name__)
+                        logger.info(f"[DEBUG] Set evaluator._current_iter to {current_iter} in test()")
+            except:
+                # If storage is not available, try to get iter from trainer
+                pass
 
         try:
             # Оборачиваем инференс в autocast, если AMP включен в конфиге
