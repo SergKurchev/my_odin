@@ -665,6 +665,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 if not hasattr(self, '_uncertainty_source_printed'):
                     print(f"[UNCERTAINTY] Using Bayesian uncertainty: {mean_entropy:.6f}")
                     self._uncertainty_source_printed = True
+                else:
+                    # Print occasionally to track values
+                    if idx % 10 == 0:
+                        print(f"[UNCERTAINTY] Bayesian uncertainty at idx {idx}: {mean_entropy:.6f}")
             elif 'pred_logits' in _out:
                 # Fallback: use single-pass entropy (deterministic inference)
                 logits = _out['pred_logits']  # Shape: (B, num_queries, num_classes)
@@ -675,6 +679,10 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 if not hasattr(self, '_uncertainty_source_printed'):
                     print(f"[UNCERTAINTY] Using deterministic entropy: {mean_entropy:.6f}")
                     self._uncertainty_source_printed = True
+                else:
+                    # Print occasionally to track values
+                    if idx % 10 == 0:
+                        print(f"[UNCERTAINTY] Deterministic entropy at idx {idx}: {mean_entropy:.6f}")
             else:
                 if not hasattr(self, '_uncertainty_missing_printed'):
                     print(f"[UNCERTAINTY] WARNING: No uncertainty or pred_logits in output! Keys: {_out.keys()}")
@@ -1335,6 +1343,7 @@ class MyTrainer(DefaultTrainer):
                 # Attach SWAG model to the head for inference
                 model.sem_seg_head.swag_model = self.swag_model
                 logger.info(f"SWAG initialized for predictor: no_cov_mat={no_cov_mat}, max_models={max_num_models}")
+                print(f"[DEBUG SWAG INIT] SWAG model attached to sem_seg_head.swag_model")
             else:
                 logger.warning("Could not find predictor in model, SWAG disabled")
                 bayesian_type = "none"
@@ -1540,6 +1549,7 @@ class MyTrainer(DefaultTrainer):
                             if hasattr(model, 'sem_seg_head') and hasattr(model.sem_seg_head, 'predictor'):
                                 predictor = model.sem_seg_head.predictor
                                 self.swag_model.collect_model(predictor)
+                                print(f"[DEBUG SWAG] Collected model at iter {self.trainer.iter}, epoch {current_epoch:.2f}, n_models={self.swag_model.n_models}")
                             else:
                                 logger = logging.getLogger("odin_strawberry")
                                 logger.warning(">>> SWAG: Could not find predictor, skipping collection <<<")
@@ -1741,6 +1751,18 @@ def setup(args):
     # Мы можем передавать это через opts, но для удобства добавим и сюда
     if hasattr(args, "bayesian_samples"):
         cfg.MODEL.BAYESIAN_SAMPLES = args.bayesian_samples
+        print(f"[DEBUG SETUP] Set cfg.MODEL.BAYESIAN_SAMPLES = {cfg.MODEL.BAYESIAN_SAMPLES} from args.bayesian_samples = {args.bayesian_samples}")
+
+    # Print all Bayesian config values for debugging
+    print(f"\n[DEBUG SETUP] Bayesian Configuration:")
+    print(f"  MODEL.BAYESIAN_TYPE = {cfg.MODEL.BAYESIAN_TYPE}")
+    print(f"  MODEL.BAYESIAN_SAMPLES = {cfg.MODEL.BAYESIAN_SAMPLES}")
+    print(f"  MODEL.BAYESIAN_INFERENCE_DURING_TRAINING = {cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING}")
+    if hasattr(cfg.MODEL, 'SWAG'):
+        print(f"  MODEL.SWAG.START_EPOCH = {cfg.MODEL.SWAG.START_EPOCH}")
+        print(f"  MODEL.SWAG.UPDATE_FREQ = {cfg.MODEL.SWAG.UPDATE_FREQ}")
+        print(f"  MODEL.SWAG.MAX_MODELS = {cfg.MODEL.SWAG.MAX_MODELS}")
+    print()
     if args.eval_period == 0:
         eval_period = steps_per_epoch * 2 # Каждые 2 эпохи по умолчанию
     else:

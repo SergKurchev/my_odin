@@ -203,6 +203,13 @@ class ODINHead(nn.Module):
         bayesian_type = getattr(self.cfg.MODEL, "BAYESIAN_TYPE", "none")
         num_samples = getattr(self.cfg.MODEL, "BAYESIAN_SAMPLES", 1)
 
+        # Ensure num_samples is an integer (config might pass it as string)
+        if isinstance(num_samples, str):
+            num_samples = int(num_samples)
+
+        print(f"[DEBUG CONFIG] bayesian_type={bayesian_type} (type={type(bayesian_type)}), "
+              f"num_samples={num_samples} (type={type(num_samples)})")
+
         # Prepare forward pass arguments
         forward_kwargs = {
             'x': multi_scale_features,
@@ -223,22 +230,28 @@ class ODINHead(nn.Module):
         # Determine if we should use Bayesian inference
         bayesian_during_training = getattr(self.cfg.MODEL, "BAYESIAN_INFERENCE_DURING_TRAINING", False)
 
+        # Ensure boolean type (config might pass it as string)
+        if isinstance(bayesian_during_training, str):
+            bayesian_during_training = bayesian_during_training.lower() in ['true', '1', 'yes']
+
         use_bayesian_inference = (
             bayesian_type != "none" and
             num_samples > 1 and
             (not self.training or bayesian_during_training)
         )
 
-        # DEBUG: Print inference mode
-        if not hasattr(self, '_inference_mode_printed'):
-            print(f"\n=== BAYESIAN INFERENCE CONFIG ===")
-            print(f"self.training: {self.training}")
-            print(f"bayesian_type: {bayesian_type}")
-            print(f"num_samples: {num_samples}")
-            print(f"bayesian_during_training: {bayesian_during_training}")
-            print(f"use_bayesian_inference: {use_bayesian_inference}")
-            print(f"=== END CONFIG ===\n")
-            self._inference_mode_printed = True
+        # DEBUG: Print inference mode (ALWAYS print to catch changes)
+        print(f"\n[DEBUG BAYESIAN] use_bayesian={use_bayesian_inference}, training={self.training}, "
+              f"bayesian_during_training={bayesian_during_training}, "
+              f"bayesian_type={bayesian_type}, bayesian_samples={num_samples}, "
+              f"swag_model={hasattr(self, 'swag_model') and self.swag_model is not None}")
+
+        # Additional check for SWAG model
+        if use_bayesian_inference and bayesian_type == "swag":
+            if not hasattr(self, 'swag_model') or self.swag_model is None:
+                print(f"[DEBUG BAYESIAN] WARNING: SWAG inference requested but swag_model is None!")
+            else:
+                print(f"[DEBUG BAYESIAN] SWAG model found, will use SWAG inference")
 
         # Select inference method
         if use_bayesian_inference:

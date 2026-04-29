@@ -1030,6 +1030,11 @@ class ODIN(nn.Module):
 
             # Save uncertainty before deleting outputs
             uncertainty = outputs.get("uncertainty", None)
+            if uncertainty is not None:
+                pred_ent_mean = uncertainty['predictive_entropy'].mean().item()
+                print(f"[DEBUG ODIN_MODEL] Saved uncertainty before del outputs: pred_ent={pred_ent_mean:.6f}")
+            else:
+                print(f"[DEBUG ODIN_MODEL] No uncertainty in outputs! Keys: {list(outputs.keys())}")
 
             del outputs
 
@@ -1059,7 +1064,19 @@ class ODIN(nn.Module):
                 images, [bs, v, H_padded, W_padded], targets,
                 num_classes, decoder_3d, multiview_data
             )
-                
+
+            # Add uncertainty to processed results (same as ghost points path)
+            if uncertainty is not None:
+                for i, result in enumerate(processed_results):
+                    result["uncertainty"] = uncertainty
+                print(f"[DEBUG ODIN_MODEL] Added uncertainty to {len(processed_results)} results in eval_normal path")
+
+            # Also add pred_logits for fallback uncertainty calculation
+            for i, result in enumerate(processed_results):
+                if "uncertainty" not in result:
+                    result["pred_logits"] = mask_cls_results[i:i+1]
+                    print(f"[DEBUG ODIN_MODEL] Added pred_logits fallback for result {i}")
+
             return processed_results
 
     def visualize_pred_on_scannet(
