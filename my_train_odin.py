@@ -695,6 +695,28 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     "instances_all": copy.deepcopy(_in.get("instances_all", [])) # 2D masks for visualization
                 }
 
+                # Save full model output to pickle for analysis
+                output_save_dir = os.path.join(self._output_dir, "model_outputs")
+                os.makedirs(output_save_dir, exist_ok=True)
+                output_file = os.path.join(output_save_dir, f"{sample_id}_output.pkl")
+
+                # Convert tensors to CPU and save
+                output_cpu = {}
+                for key, value in _out.items():
+                    if isinstance(value, torch.Tensor):
+                        output_cpu[key] = value.cpu()
+                    elif isinstance(value, dict):
+                        output_cpu[key] = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in value.items()}
+                    else:
+                        output_cpu[key] = value
+
+                import pickle
+                with open(output_file, 'wb') as f:
+                    pickle.dump(output_cpu, f)
+
+                logger = logging.getLogger(__name__)
+                logger.info(f"[SAVE OUTPUT] Saved model output to {output_file}")
+
             # 5. Count frames and timing BEFORE deleting tensors
             num_frames = len(_in.get("images", []))
             self.inference_times.append(time.perf_counter() - start_t)
