@@ -1040,13 +1040,80 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # Однако, для точности в CSV запишем константы из последнего замера если доступно.
         preds_dict = self.processed_preds
         gts_dict = self.processed_gts
-            
+
+        # ========================================================================
+        # CRITICAL INDEXING VERIFICATION (from INDEX_ANALYSIS.md)
+        # ========================================================================
+        logger = logging.getLogger(__name__)
+        logger.info("=" * 80)
+        logger.info("[INDEX CHECK] Starting comprehensive indexing verification")
+        logger.info("=" * 80)
+
+        # Check 1: Verify pred_classes indexing
+        logger.info("[CHECK 1] Pred classes indexing:")
+        for idx in list(preds_dict.keys())[:3]:  # Check first 3 samples
+            pred_classes = preds_dict[idx].get('pred_classes', np.array([]))
+            logger.info(f"  Sample idx={idx}: pred_classes shape={pred_classes.shape}, unique values={np.unique(pred_classes)}")
+
+        # Check 2: Verify GT class_labels indexing
+        logger.info("[CHECK 2] GT class_labels indexing:")
+        for idx in list(gts_dict.keys())[:3]:  # Check first 3 samples
+            class_labels = gts_dict[idx].get('class_labels', np.array([]))
+            logger.info(f"  Sample idx={idx}: class_labels shape={class_labels.shape}, unique values={np.unique(class_labels)}")
+
+        # Check 3: Verify dictionary keys are sequential
+        logger.info("[CHECK 3] Dictionary key sequentiality:")
+        pred_keys = sorted(preds_dict.keys())
+        gt_keys = sorted(gts_dict.keys())
+        logger.info(f"  preds_dict keys: {pred_keys[:10]}... (total: {len(pred_keys)})")
+        logger.info(f"  gts_dict keys: {gt_keys[:10]}... (total: {len(gt_keys)})")
+
+        # Check if keys are sequential (0, 1, 2, ...) or have gaps
+        keys_sequential = all(pred_keys[i] == i for i in range(len(pred_keys)))
+        logger.info(f"  Keys are sequential (0, 1, 2, ...): {keys_sequential}")
+
+        if not keys_sequential:
+            logger.warning("[CHECK 3] WARNING: Dictionary keys are NOT sequential!")
+            logger.warning(f"  Expected: [0, 1, 2, ...], Got: {pred_keys[:20]}")
+
+        # Check 4: Verify enumerate() vs dict keys mismatch
+        logger.info("[CHECK 4] Enumerate index vs dict key verification:")
+        mismatch_found = False
+        for i, (k, v) in enumerate(preds_dict.items()):
+            if i != k:
+                if not mismatch_found:
+                    logger.error(f"[CHECK 4] ERROR: Key mismatch detected!")
+                    mismatch_found = True
+                logger.error(f"  enumerate index i={i} but dict key k={k} (i != k)")
+            if i >= 5:  # Check first 5 only
+                break
+
+        if not mismatch_found:
+            logger.info("  All checked indices match their keys (i == k)")
+
+        # Check 5: Verify what evaluator receives
+        logger.info("[CHECK 5] Data passed to evaluator:")
+        sample_idx = list(preds_dict.keys())[0]
+        sample_pred = preds_dict[sample_idx]
+        sample_gt = gts_dict[sample_idx]
+        logger.info(f"  Sample idx={sample_idx}:")
+        logger.info(f"    pred_classes: {sample_pred.get('pred_classes', np.array([]))}")
+        logger.info(f"    pred_scores: {sample_pred.get('pred_scores', np.array([]))}")
+        logger.info(f"    gt class_labels: {sample_gt.get('class_labels', np.array([]))}")
+
+        logger.info("=" * 80)
+        logger.info("[INDEX CHECK] Verification complete")
+        logger.info("=" * 80)
+        # ========================================================================
+
         # 3. Расчет AP (mAP, mAP@50, mAP@25) через стандартный механизм ScanNet
         matches = {}
         for i, (k, v) in enumerate(preds_dict.items()):
             gt2pred, pred2gt = self.scannet_evaluator.assign_instances_for_scan(v, gts_dict[k])
-            matches[i] = {'gt': gt2pred, 'pred': pred2gt}
-            
+            # CRITICAL FIX: Use k (dict key) instead of i (enumerate index) for matches
+            # This ensures matches dictionary uses same keys as preds_dict/gts_dict
+            matches[k] = {'gt': gt2pred, 'pred': pred2gt}
+
         num_preds = sum(len(v['pred_classes']) for v in preds_dict.values())
         num_gts = sum(len(v['class_labels']) for v in gts_dict.values())
         logging.getLogger(__name__).info(f"Статистика оценки: Найдено предсказаний: {num_preds}, Всего GT инстансов: {num_gts}")
