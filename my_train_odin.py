@@ -1709,6 +1709,17 @@ def setup(args):
         
     cfg.merge_from_list(clean_opts)
 
+    # CRITICAL FIX: Ensure BAYESIAN_SAMPLES is integer
+    # merge_from_list might not convert string '10' to int properly
+    if isinstance(cfg.MODEL.BAYESIAN_SAMPLES, str):
+        cfg.MODEL.BAYESIAN_SAMPLES = int(cfg.MODEL.BAYESIAN_SAMPLES)
+        print(f"[FIX] Converted BAYESIAN_SAMPLES from string to int: {cfg.MODEL.BAYESIAN_SAMPLES}")
+
+    # Same for BAYESIAN_INFERENCE_DURING_TRAINING
+    if isinstance(cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING, str):
+        cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING = cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING.lower() in ['true', '1', 'yes']
+        print(f"[FIX] Converted BAYESIAN_INFERENCE_DURING_TRAINING from string to bool: {cfg.MODEL.BAYESIAN_INFERENCE_DURING_TRAINING}")
+
     # Auto-detect dataset type and register accordingly
     dataset_dir = args.dataset_dir
     splits_file = args.splits_file
