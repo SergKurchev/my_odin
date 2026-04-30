@@ -29,13 +29,32 @@
 
 > **Статус:** Модель обучена и готова к инференсу.
 
-**Ноутбук на Kaggle:** [`strawpick-segpoinnet-my-odin-bayes`](https://www.kaggle.com/code/sergeistwpk/strawpick-segpoinnet-my-odin-bayes/settings?scriptVersionId=315363362)
+**Ноутбук на Kaggle:** [`strawpick-segpoinnet-my-odin-bayes`](https://www.kaggle.com/code/sergeistwpk/strawpick-segpoinnet-my-odin-bayes?scriptVersionId=315427758)
 
-**Коммит обучения:** `f9b4b1d` — на данном коммите была обучена модель.
+**Коммит обучения:** `f6d52bd` — на данном коммите была обучена модель.
 
-**Коммит инференса:** `f9b4b1d` — инференс модели также работает на данном коммите.
+**Коммит инференса:** `f6d52bd` — инференс модели также работает на данном коммите.
 
-> Оба процесса (обучение и инференс) верифицированы на коммите **`f9b4b1d`** (`Fix zero metrics: convert pred_classes to 1-indexed for evaluator`).
+> Оба процесса (обучение и инференс) верифицированы на коммите **`f6d52bd`** (`Fix NaN recovery: search for any available checkpoint when last_good unavailable`).
+
+**Метрики финальной модели (iteration 6335):**
+- `PQ`: 51.67%
+- `SQ`: 68.55%
+- `RQ`: 75.38%
+- `mAP`: 31.03%
+- `mAP@50`: 72.30%
+- `mAP@25`: 85.05%
+- `mean_uncertainty`: 0.0445
+- `total_loss`: 7.31
+
+**Метрики инференса:**
+- `Inference Speed`: 0.1206 sec/sample (~8.29 FPS)
+- `Условия инференса`: 
+  - 16 ГБ VRAM (Kaggle T4 GPU)
+  - 5 кадров на сэмпл
+  - Разрешение каждого кадра: 640x640 px
+  - `batch size` = 1
+  - Bayesian inference: SWAG + MC Dropout (10 samples)
 
 ---
 
