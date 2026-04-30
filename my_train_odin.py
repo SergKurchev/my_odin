@@ -615,9 +615,6 @@ class StrawberryDatasetMapper:
 # 3. Strawberry 3D Evaluator (PQ, SQ, RQ, mAP)
 # -------------------------------------------------------------------------
 class Strawberry3DEvaluator(DatasetEvaluator):
-    # How many samples (by arrival order) to save raw pkl + visualize per eval run
-    MAX_SAVED_SAMPLES = 3
-
     def __init__(self, dataset_name, output_dir, cfg):
         self._dataset_name = dataset_name
         self._output_dir = output_dir
@@ -631,56 +628,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         
         self.reset()
         os.makedirs(self._output_dir, exist_ok=True)
-
-    @staticmethod
-    def _to_cpu_safe(obj):
-        """Recursively move tensors to CPU and stringify anything unpicklable."""
-        if isinstance(obj, torch.Tensor):
-            return obj.detach().cpu()
-        elif isinstance(obj, dict):
-            return {k: Strawberry3DEvaluator._to_cpu_safe(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple)):
-            converted = [Strawberry3DEvaluator._to_cpu_safe(item) for item in obj]
-            return type(obj)(converted)
-        else:
-            # Try .to(cpu) for Instances / custom objects
-            try:
-                return obj.to(torch.device('cpu'))
-            except Exception:
-                pass
-            # Test if picklable as-is
-            try:
-                import pickle; pickle.dumps(obj)
-                return obj
-            except Exception:
-                return repr(obj)  # last resort: stringify
-
-    def _save_raw_inference_safe(self, sample_id, _out, current_iter):
-        """Save raw model output to output/inferences/iter_NNNNNNN/<sample_id>_raw.pkl.
-        Completely isolated — any exception is caught and printed, never re-raised."""
-        try:
-            save_dir = os.path.join(self._output_dir, "..", "inferences", f"iter_{current_iter:07d}")
-            save_dir = os.path.normpath(save_dir)
-            os.makedirs(save_dir, exist_ok=True)
-
-            output_file = os.path.join(save_dir, f"{sample_id}_raw.pkl")
-
-            print(f"[SAVE_PKL] Converting output to CPU for sample '{sample_id}' ...", flush=True)
-            output_cpu = self._to_cpu_safe(_out)
-
-            import pickle
-            with open(output_file, 'wb') as f:
-                pickle.dump(output_cpu, f)
-
-            file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
-            print(f"[SAVE_PKL] ✅ Saved: {output_file}  ({file_size_mb:.2f} MB)", flush=True)
-
-        except Exception as e:
-            import traceback
-            print(f"[SAVE_PKL] ❌ FAILED for '{sample_id}': {e}", flush=True)
-            print(f"[SAVE_PKL] Traceback:\n{traceback.format_exc()}", flush=True)
-            # NEVER re-raise — saving must never break the eval loop
-
+        
     def reset(self):
         self.processed_preds = {} # Store parsed results indexed by idx
         self.processed_gts = {}   # Store parsed results indexed by idx
@@ -689,37 +637,133 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self.total_frames = 0     # Track total frames for accurate speed metrics
         self.uncertainties = []   # Store uncertainty (entropy) per sample
         self._current_idx = 0
-        self._saved_count = 0     # How many samples have been pkl-saved this eval run
         
     def process(self, inputs, outputs):
         """
         inputs: List of dataset dicts
         outputs: List of model outputs
         """
+        target_samples = ["00000", "sample_00000", "00003", "sample_00003", "00005", "sample_00005"]
         logger = logging.getLogger(__name__)
-        current_iter = getattr(self, '_current_iter', 0)
 
         for _in, _out in zip(inputs, outputs):
             start_t = time.perf_counter()
             idx = self._current_idx
             sample_id = str(_in.get("image_id", ""))
 
-            # Always print to stdout (visible in Kaggle notebook)
-            print(f"[PROC] idx={idx} sample_id='{sample_id}' iter={current_iter} saved_so_far={self._saved_count}/{self.MAX_SAVED_SAMPLES}", flush=True)
+            # DEBUG: Log sample_id for every sample
+            logger.info(f"[DEBUG] Processing sample_id: '{sample_id}' (idx={idx})")
 
-            # ----------------------------------------------------------------
-            # Save raw pkl + populate vis_data for the first MAX_SAVED_SAMPLES
-            # of each eval run — no hardcoded IDs, works for any dataset split
-            # ----------------------------------------------------------------
-            is_target = (self._saved_count < self.MAX_SAVED_SAMPLES)
+            # Check if this is a target sample for visualization
+            is_target = any(ts in sample_id for ts in target_samples)
 
+            # DEBUG: Log target check result
+            logger.info(f"[DEBUG] is_target={is_target} for sample_id='{sample_id}'")
+            logger.info(f"[DEBUG] target_samples={target_samples}")
+
+            # Save raw model output for target samples
             if is_target:
-                print(f"[PROC] → Saving pkl for '{sample_id}' (sample #{self._saved_count + 1} of {self.MAX_SAVED_SAMPLES})", flush=True)
+                # Create output directory based on current iteration
+                current_iter = getattr(self, '_current_iter', 0)
+                logger.info(f"[DEBUG] current_iter={current_iter}")
 
-                # 1. Save raw pkl (fail-safe: never crashes eval loop)
-                self._save_raw_inference_safe(sample_id, _out, current_iter)
+                raw_output_dir = os.path.join(self._output_dir, "odin_output", f"iter_{current_iter:07d}")
+                logger.info(f"[DEBUG] raw_output_dir={raw_output_dir}")
 
-                # 2. Store visualization data (lightweight CPU copy)
+                os.makedirs(raw_output_dir, exist_ok=True)
+                logger.info(f"[DEBUG] Created directory: {raw_output_dir}")
+
+                # Save raw output to pickle
+                output_file = os.path.join(raw_output_dir, f"{sample_id}_raw_output.pkl")
+                logger.info(f"[DEBUG] output_file={output_file}")
+
+                try:
+                    # Convert tensors to CPU for saving
+                    output_cpu = {}
+                    for key, value in _out.items():
+                        if isinstance(value, torch.Tensor):
+                            output_cpu[key] = value.cpu()
+                        elif isinstance(value, dict):
+                            output_cpu[key] = {}
+                            for k, v in value.items():
+                                if isinstance(v, torch.Tensor):
+                                    output_cpu[key][k] = v.cpu()
+                                else:
+                                    output_cpu[key][k] = v
+                        elif isinstance(value, list):
+                            output_cpu[key] = []
+                            for item in value:
+                                if isinstance(item, torch.Tensor):
+                                    output_cpu[key].append(item.cpu())
+                                else:
+                                    output_cpu[key].append(item)
+                        else:
+                            output_cpu[key] = value
+
+                    logger.info(f"[DEBUG] Converted output to CPU, keys: {list(output_cpu.keys())}")
+
+                    import pickle
+                    with open(output_file, 'wb') as f:
+                        pickle.dump(output_cpu, f)
+
+                    logger.info(f"[SAVE RAW OUTPUT] Saved raw model output to {output_file}")
+
+                    # Verify file was created
+                    if os.path.exists(output_file):
+                        file_size = os.path.getsize(output_file)
+                        logger.info(f"[DEBUG] File verified: {output_file} (size={file_size} bytes)")
+                    else:
+                        logger.error(f"[DEBUG] File NOT found after saving: {output_file}")
+
+                except Exception as e:
+                    logger.error(f"[ERROR] Failed to save raw output for {sample_id}: {e}")
+                    import traceback
+                    logger.error(f"[ERROR] Traceback: {traceback.format_exc()}")
+
+            # 1. Parse and store ground truth (3D masks/labels)
+            # This is much lighter than the full _in (RGB, Depth, Large XYZ tensors)
+            self.processed_gts[idx] = self._parse_gt(_in)
+
+            # 2. Parse and store prediction
+            self.processed_preds[idx] = self._parse_pred(_out)
+
+            # 3. Calculate uncertainty (entropy) from Bayesian samples or pred_logits
+            if 'uncertainty' in _out and 'predictive_entropy' in _out['uncertainty']:
+                # Use Bayesian uncertainty (from multiple samples)
+                predictive_entropy = _out['uncertainty']['predictive_entropy']  # [B, Q]
+                mean_entropy = predictive_entropy.mean().item()
+                self.uncertainties.append(mean_entropy)
+                if not hasattr(self, '_uncertainty_source_printed'):
+                    print(f"[UNCERTAINTY] Using Bayesian uncertainty: {mean_entropy:.6f}")
+                    self._uncertainty_source_printed = True
+                else:
+                    # Print occasionally to track values
+                    if idx % 10 == 0:
+                        print(f"[UNCERTAINTY] Bayesian uncertainty at idx {idx}: {mean_entropy:.6f}")
+            elif 'pred_logits' in _out:
+                # Fallback: use single-pass entropy (deterministic inference)
+                logits = _out['pred_logits']  # Shape: (B, num_queries, num_classes)
+                probs = torch.softmax(logits, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)  # (B, num_queries)
+                mean_entropy = entropy.mean().item()
+                self.uncertainties.append(mean_entropy)
+                if not hasattr(self, '_uncertainty_source_printed'):
+                    print(f"[UNCERTAINTY] Using deterministic entropy: {mean_entropy:.6f}")
+                    self._uncertainty_source_printed = True
+                else:
+                    # Print occasionally to track values
+                    if idx % 10 == 0:
+                        print(f"[UNCERTAINTY] Deterministic entropy at idx {idx}: {mean_entropy:.6f}")
+            else:
+                if not hasattr(self, '_uncertainty_missing_printed'):
+                    print(f"[UNCERTAINTY] WARNING: No uncertainty or pred_logits in output! Keys: {_out.keys()}")
+                    self._uncertainty_missing_printed = True
+
+            # 4. Check if we need visualization for this sample
+            is_target = any(ts in sample_id for ts in target_samples)
+            if is_target:
+                # Store only the minimum data needed for build_html (ON CPU)
+                # We copy and move to CPU to ensure no references to GPU-heavy objects
                 self.vis_data[idx] = {
                     "image_id": sample_id,
                     "images": [img.cpu() for img in _in.get("images", [])],
@@ -727,47 +771,32 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     "poses": [p.cpu() for p in _in.get("poses", [])],
                     "intrinsics": [i.cpu() for i in _in.get("intrinsics", [])],
                     "color_map": copy.deepcopy(_in.get("color_map", {})),
-                    "instances_all": copy.deepcopy(_in.get("instances_all", []))
+                    "instances_all": copy.deepcopy(_in.get("instances_all", [])) # 2D masks for visualization
                 }
 
-                self._saved_count += 1
-            else:
-                if idx == self.MAX_SAVED_SAMPLES:  # print once when quota is full
-                    print(f"[PROC] Pkl quota ({self.MAX_SAVED_SAMPLES}) reached — rest of eval skips pkl saving.", flush=True)
+                # Save full model output to pickle for analysis
+                output_save_dir = os.path.join(self._output_dir, "model_outputs")
+                os.makedirs(output_save_dir, exist_ok=True)
+                output_file = os.path.join(output_save_dir, f"{sample_id}_output.pkl")
 
-            # 1. Parse and store ground truth (3D masks/labels)
-            self.processed_gts[idx] = self._parse_gt(_in)
+                # Convert tensors to CPU and save
+                output_cpu = {}
+                for key, value in _out.items():
+                    if isinstance(value, torch.Tensor):
+                        output_cpu[key] = value.cpu()
+                    elif isinstance(value, dict):
+                        output_cpu[key] = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in value.items()}
+                    else:
+                        output_cpu[key] = value
 
-            # 2. Parse and store prediction
-            self.processed_preds[idx] = self._parse_pred(_out)
+                import pickle
+                with open(output_file, 'wb') as f:
+                    pickle.dump(output_cpu, f)
 
-            # 3. Calculate uncertainty (entropy)
-            if 'uncertainty' in _out and 'predictive_entropy' in _out['uncertainty']:
-                predictive_entropy = _out['uncertainty']['predictive_entropy']
-                mean_entropy = predictive_entropy.mean().item()
-                self.uncertainties.append(mean_entropy)
-                if not hasattr(self, '_uncertainty_source_printed'):
-                    print(f"[UNCERTAINTY] Using Bayesian uncertainty: {mean_entropy:.6f}", flush=True)
-                    self._uncertainty_source_printed = True
-                elif idx % 10 == 0:
-                    print(f"[UNCERTAINTY] Bayesian entropy at idx {idx}: {mean_entropy:.6f}", flush=True)
-            elif 'pred_logits' in _out:
-                logits = _out['pred_logits']
-                probs = torch.softmax(logits, dim=-1)
-                entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)
-                mean_entropy = entropy.mean().item()
-                self.uncertainties.append(mean_entropy)
-                if not hasattr(self, '_uncertainty_source_printed'):
-                    print(f"[UNCERTAINTY] Using deterministic entropy: {mean_entropy:.6f}", flush=True)
-                    self._uncertainty_source_printed = True
-                elif idx % 10 == 0:
-                    print(f"[UNCERTAINTY] Deterministic entropy at idx {idx}: {mean_entropy:.6f}", flush=True)
-            else:
-                if not hasattr(self, '_uncertainty_missing_printed'):
-                    print(f"[UNCERTAINTY] WARNING: No uncertainty/pred_logits in output. Keys: {list(_out.keys())}", flush=True)
-                    self._uncertainty_missing_printed = True
+                logger = logging.getLogger(__name__)
+                logger.info(f"[SAVE OUTPUT] Saved model output to {output_file}")
 
-            # 4. Count frames and timing BEFORE deleting tensors
+            # 5. Count frames and timing BEFORE deleting tensors
             num_frames = len(_in.get("images", []))
             self.inference_times.append(time.perf_counter() - start_t)
             self.total_frames += num_frames
@@ -885,18 +914,15 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 point_pred_cat = None
                 
                 if pred_masks is not None and len(pred_masks) > 0:
-                    # ODIN модель возвращает pred_masks формы [NumPoints, NumInstances]
-                    # (см. odin_model.py: masks.flatten(1).permute(1, 0))
-                    # Поэтому axis-0 = точки, axis-1 = инстансы
-                    num_pts_total = pred_masks.shape[0]
-                    num_pred_instances = pred_masks.shape[1]
+                    num_pred_instances = pred_masks.shape[0]
+                    num_pts_total = pred_masks.shape[1]
                     # Создаем карту меток для всех точек сразу (фон = -1)
                     point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
 
                     # Если маски перекрываются, побеждает последняя
                     for inst_idx in range(num_pred_instances):
-                        m = pred_masks[:, inst_idx] > 0  # выбираем столбец инстанса
+                        m = pred_masks[inst_idx] > 0
                         if np.any(m):
                             point_pred_inst[m] = inst_idx # 0-indexed для виза
                             # ВАЖНО: для strawberry dataset pred_classes уже 0-индексированные (без +1 в prepare_3d)
@@ -1290,22 +1316,48 @@ class AMPTrainerWithClipping(AMPTrainer):
             logger.error(f"[NaN RECOVERY] Too many consecutive NaNs ({self.nan_count}). Aborting.")
             raise RuntimeError(f"NaN recovery failed after {self.nan_count} attempts!")
 
-        # Try to restore from last good checkpoint
-        logger.info(f"[NaN RECOVERY DEBUG] checkpointer={self.checkpointer is not None}, last_good_checkpoint={self.last_good_checkpoint}")
-        if self.checkpointer and self.last_good_checkpoint:
-            logger.warning(f"[NaN RECOVERY] Restoring model from last good checkpoint: {self.last_good_checkpoint}")
-            try:
-                checkpoint = self.checkpointer._load_file(self.last_good_checkpoint)
-                self.checkpointer._load_model(checkpoint)
-                logger.info(f"[NaN RECOVERY] Model weights restored successfully")
-            except Exception as e:
-                logger.error(f"[NaN RECOVERY] Failed to restore checkpoint: {e}")
-                logger.warning(f"[NaN RECOVERY] Continuing with current weights (risky!)")
-        else:
-            if not self.checkpointer:
-                logger.warning(f"[NaN RECOVERY] No checkpointer available - cannot restore weights")
-            if not self.last_good_checkpoint:
-                logger.warning(f"[NaN RECOVERY] No last good checkpoint available - cannot restore weights")
+        # Try to restore from checkpoint
+        restored = False
+        if self.checkpointer:
+            # First try last_good_checkpoint if available
+            if self.last_good_checkpoint:
+                logger.warning(f"[NaN RECOVERY] Restoring from last good checkpoint: {self.last_good_checkpoint}")
+                try:
+                    checkpoint = self.checkpointer._load_file(self.last_good_checkpoint)
+                    self.checkpointer._load_model(checkpoint)
+                    logger.info(f"[NaN RECOVERY] Model weights restored from last good checkpoint")
+                    restored = True
+                except Exception as e:
+                    logger.error(f"[NaN RECOVERY] Failed to restore last good checkpoint: {e}")
+
+            # If no last_good_checkpoint or restore failed, try to find ANY checkpoint
+            if not restored:
+                logger.warning(f"[NaN RECOVERY] Searching for any available checkpoint in {self.output_dir}")
+                try:
+                    # Find all checkpoint files
+                    checkpoint_files = []
+                    if self.output_dir and os.path.exists(self.output_dir):
+                        for f in os.listdir(self.output_dir):
+                            if f.startswith("model_") and f.endswith(".pth"):
+                                checkpoint_files.append(os.path.join(self.output_dir, f))
+
+                    if checkpoint_files:
+                        # Use the most recent checkpoint
+                        latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)
+                        logger.warning(f"[NaN RECOVERY] Found checkpoint: {latest_checkpoint}")
+                        checkpoint = self.checkpointer._load_file(latest_checkpoint)
+                        self.checkpointer._load_model(checkpoint)
+                        checkpoint_iter = checkpoint.get('iteration', 'unknown')
+                        logger.info(f"[NaN RECOVERY] Model weights restored from checkpoint at iter {checkpoint_iter}")
+                        restored = True
+                    else:
+                        logger.error(f"[NaN RECOVERY] No checkpoint files found in {self.output_dir}")
+                except Exception as e:
+                    logger.error(f"[NaN RECOVERY] Failed to find/restore any checkpoint: {e}")
+
+        if not restored:
+            logger.error(f"[NaN RECOVERY] Could not restore weights - continuing with corrupted model (will likely fail)")
+            logger.error(f"[NaN RECOVERY] Consider: 1) Reducing LR permanently, 2) Checking data quality, 3) Restarting from earlier checkpoint")
 
         # Store original LRs if not already in recovery
         if not self.nan_recovery_active:
@@ -1596,7 +1648,7 @@ class MyTrainer(DefaultTrainer):
                     except Exception as e:
                         logger.warning(f"--- [CLEANUP] Ошибка при удалении {filename}: {e} ---")
 
-        all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, keep_last=2))
+        all_hooks.append(CheckpointCleanupHook(self.cfg.OUTPUT_DIR, keep_last=3))
 
         # Hook to track last good checkpoint for NaN recovery
         class LastGoodCheckpointHook(hooks.HookBase):
