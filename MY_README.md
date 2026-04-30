@@ -2,30 +2,7 @@
 
 Данный документ описывает воркфлоу работы `my_train_odin.py` в рамках протокола `models_evaluation_protocol.md` для Strawberry Multi-view Dataset.
 
-## 0. Стабильная версия (Stable Baseline)
-**Текущий рабочий ноутбук на  kaggle:** [`strawpick-segpoinnet-my-odin`](https://www.kaggle.com/code/sergkurchevusa/strawpick-segpoinnet-my-odin/output?scriptVersionId=313026137)
-
-**Метрики:**
-- `iteration`: 2879
-- `total_loss`: 7.2639570569153875
-- `PQ`: 52.79569217686208
-- `SQ`: 69.03304133622852
-- `RQ`: 76.47887323943662
-- `mAP`: 32.64766504558833
-- `mAP@50`: 72.3151450339084
-- `mAP@25`: 81.93239412340795
-
-**Метрики инференса:**
-- `Inference Speed`: 0.4387 sec/sample (~2.27 FPS)
-- `Условия инференса`: 
-  - 16 ГБ VRAM
-  - 5 кадров на сэмпл
-  - Разрешение каждого кадра: 640x640 px
-  - `batch size` = 1
-
----
-
-## 🟢 Активная обученная модель (Active Trained Model)
+## Активная обученная модель (Active Trained Model)
 
 > **Статус:** Модель обучена и готова к инференсу.
 
@@ -50,7 +27,7 @@
 **Метрики инференса:**
 - `Inference Speed`: 0.1206 sec/sample (~8.29 FPS)
 - `Условия инференса`: 
-  - 16 ГБ VRAM (Kaggle T4 GPU)
+  - 16 ГБ VRAM
   - 5 кадров на сэмпл
   - Разрешение каждого кадра: 640x640 px
   - `batch size` = 1

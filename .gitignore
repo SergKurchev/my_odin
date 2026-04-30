@@ -1,5 +1,6 @@
 # output dir
 output
+output_odin
 instant_test_output
 inference_test_output
 
@@ -45,6 +46,10 @@ model_ts*.txt
 .idea
 .vscode
 _darcs
+
+# Claude Code
+CLAUDE.md
+.claude/
 
 # project dirs
 /detectron2/model_zoo/configs
