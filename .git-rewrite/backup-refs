@@ -1,0 +1,11 @@
+830473316f168726ba16b875e52fff474b7bd65c commit	refs/heads/main
+92ef1caa56087aaf383f7d16eedd4767d14944d9 commit	refs/heads/stable
+8232771c33e8a65319e7c6f167f70162425f0e36 commit	refs/original/refs/heads/main
+346259656c0b5721772970793aac4bdab862f8b4 commit	refs/original/refs/heads/stable
+8232771c33e8a65319e7c6f167f70162425f0e36 commit	refs/original/refs/remotes/origin/main
+d80c807f5f6b2750b921ba99d794377fdb1b1187 commit	refs/original/refs/remotes/origin/odin_transfer_later
+346259656c0b5721772970793aac4bdab862f8b4 commit	refs/original/refs/remotes/origin/stable
+830473316f168726ba16b875e52fff474b7bd65c commit	refs/remotes/origin/HEAD
+830473316f168726ba16b875e52fff474b7bd65c commit	refs/remotes/origin/main
+90a7bdcc3bcd0e6464d289e03abf8ed892dca71a commit	refs/remotes/origin/odin_transfer_later
+92ef1caa56087aaf383f7d16eedd4767d14944d9 commit	refs/remotes/origin/stable

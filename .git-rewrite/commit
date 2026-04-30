@@ -1,0 +1,6 @@
+tree 0e481308e15687be9e4bac393e737b742ec06fd2
+parent b2e8808c5188747ffa67f369ca82ab8485a00d78
+author SergKurchev <sergkurchev@gmail.com> 1776414266 +0300
+committer SergKurchev <sergkurchev@gmail.com> 1776414266 +0300
+
+fix: add required width/height fields to dataset dicts for detectron2
