@@ -604,9 +604,9 @@ class StrawberryDatasetMapper:
             # original_xyz_list[0] имеет форму [V, H_padded, W_padded, 3]
             dataset_dict['original_xyz'] = original_xyz_list[0]
 
-        dataset_dict["all_classes"] = copy.copy(CATEGORIES)
+        dataset_dict["all_classes"] = copy.copy(self.categories)
         dataset_dict["num_classes"] = self.num_classes
-        dataset_dict["dataset_name"] = "strawberry_train" if self.is_train else "strawberry_val"
+        dataset_dict["dataset_name"] = f"{self.dataset_type}_train" if self.is_train else f"{self.dataset_type}_val"
 
         
         return dataset_dict
@@ -623,8 +623,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self.multiplier = 1000 # Standard for instance encoding
         self._current_iter = 0  # Will be updated by hook before eval
 
-        # Инциализируем реальный эвалюатор из ODIN (с поддержкой strawberry)
-        self.scannet_evaluator = Scannet_Evaluator("strawberry")
+        # Инциализируем реальный эвалюатор из ODIN (с поддержкой strawberry и nbv)
+        self.scannet_evaluator = Scannet_Evaluator(self._dataset_name)
         
         self.reset()
         os.makedirs(self._output_dir, exist_ok=True)

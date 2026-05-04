@@ -61,6 +61,18 @@ class Scannet_Evaluator():
             self.CLASS_LABELS = MATTERPORT_CLASS_LABELS
         elif 'strawberry' in dataset_name:
             self.CLASS_LABELS = ["Ripe", "Unripe", "Half-ripe"]
+        elif 'nbv_stage2' in dataset_name or 'nbv' in dataset_name:
+            # NBV Stage2 has 24 classes (8 primitives * 3 textures)
+            NBV_PRIMITIVE_NAMES = {
+                1: "cube", 2: "sphere", 3: "cylinder", 4: "cone",
+                5: "torus", 6: "capsule", 7: "ellipsoid", 8: "pyramid"
+            }
+            NBV_TEXTURE_NAMES = ["red", "mixed", "green"]
+            nbv_classes = []
+            for prim_id in sorted(NBV_PRIMITIVE_NAMES.keys()):
+                for texture in NBV_TEXTURE_NAMES:
+                    nbv_classes.append(f"{NBV_PRIMITIVE_NAMES[prim_id]}_{texture}")
+            self.CLASS_LABELS = nbv_classes
         else:
             self.CLASS_LABELS = SCANNET_INSTANCE_CLASS_NAMES
         
