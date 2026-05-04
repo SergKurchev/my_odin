@@ -1844,7 +1844,7 @@ class NBVActiveODIN(nn.Module):
 
 # -------------------------------------------------------------------------
 # 5. MyTrainer (Detectron2 Trainer)
-# -------------------------------------------------------------------------
+class MyTrainer(DefaultTrainer):
     def __init__(self, cfg):
         super(DefaultTrainer, self).__init__()
         logger = logging.getLogger("detectron2")
