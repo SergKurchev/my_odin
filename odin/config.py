@@ -258,3 +258,31 @@ def add_maskformer2_video_config(cfg):
     cfg.MODEL.SWAG.SCALE = 1.0  # Sampling scale for SWAG posterior
     cfg.MODEL.SWAG.RANK = 20  # Rank for low-rank covariance approximation
     cfg.MODEL.SWAG.NO_COV_MAT = False  # If True, use diagonal-only SWAG (faster)
+
+    # ==========================================
+    # NBV Active ODIN — Coverage & NBV heads
+    # ==========================================
+    # Master flag: enables both Coverage Head and NBV Head simultaneously.
+    # When False, both heads are disabled and no extra loss/output is produced.
+    cfg.MODEL.NBV_ACTIVE = False
+
+    # Coverage Head: predicts p_hidden ∈ [0,1] — probability that some objects
+    # in the scene are still undetected (not segmented with IoU >= threshold).
+    # Trained with BCE loss against GT computed from mask visibility in the mapper.
+    cfg.MODEL.COVERAGE_HEAD = CN()
+    cfg.MODEL.COVERAGE_HEAD.ENABLED = True          # Sub-flag (requires NBV_ACTIVE=True)
+    cfg.MODEL.COVERAGE_HEAD.HIDDEN_DIM = 128        # Hidden dim of the 2-layer MLP
+    cfg.MODEL.COVERAGE_HEAD.LOSS_WEIGHT = 1.0       # Weight in total loss
+    cfg.MODEL.COVERAGE_HEAD.MIN_VISIBLE_PIXELS = 100  # Min pixels to count object as visible
+
+    # NBV Head: predicts next camera position (XYZ) + orientation (quaternion).
+    # Input: pooled decoder query features [B,256] + current camera pose [B,7].
+    # Loss: surrogate self-supervised (explore + step regularizer), no GT needed.
+    # Expected to produce noisy predictions; quality improves after RL fine-tuning.
+    cfg.MODEL.NBV_HEAD = CN()
+    cfg.MODEL.NBV_HEAD.ENABLED = True               # Sub-flag (requires NBV_ACTIVE=True)
+    cfg.MODEL.NBV_HEAD.HIDDEN_DIM = 128             # Hidden dim of the MLP head
+    cfg.MODEL.NBV_HEAD.TARGET_STEP_METERS = 0.3    # Target step size (regularizer anchor)
+    cfg.MODEL.NBV_HEAD.EXPLORE_WEIGHT = 1.0         # Weight of p_hidden * (-step) loss
+    cfg.MODEL.NBV_HEAD.REG_WEIGHT = 0.5             # Weight of step-size regularizer
+    cfg.MODEL.NBV_HEAD.LOSS_WEIGHT = 0.5            # Weight of total NBV loss in sum

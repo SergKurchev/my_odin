@@ -451,6 +451,13 @@ class StrawberryDatasetMapper:
 
         self.size_divisibility = cfg.INPUT.SIZE_DIVISIBILITY
         self.num_frames = cfg.INPUT.SAMPLING_FRAME_NUM
+
+        # NBV Active modules config
+        self.nbv_active = getattr(cfg.MODEL, "NBV_ACTIVE", False)
+        if self.nbv_active:
+            self.coverage_min_pixels = getattr(
+                cfg.MODEL.COVERAGE_HEAD, "MIN_VISIBLE_PIXELS", 100
+            )
         
     def __call__(self, dataset_dict):
         dataset_dict = copy.deepcopy(dataset_dict)
@@ -608,11 +615,277 @@ class StrawberryDatasetMapper:
         dataset_dict["num_classes"] = self.num_classes
         dataset_dict["dataset_name"] = f"{self.dataset_type}_train" if self.is_train else f"{self.dataset_type}_val"
 
-        
+        # ── NBV Active: compute coverage_gt and current camera pose ──────────
+        if self.nbv_active:
+            # --- coverage_gt ---
+            # Use ALL mask paths in the chunk (not just the sampled ones)
+            # so visibility is judged over the full available views.
+            all_mask_paths = dataset_dict.get("masks_file_names", [])
+            color_map_raw = dataset_dict.get("color_map", {})
+
+            # Collect valid (non-robot) objects with their RGB color key
+            if isinstance(color_map_raw, dict):
+                # dict keyed by color tuple
+                valid_objects = [
+                    (color_key, info)
+                    for color_key, info in color_map_raw.items()
+                    if info.get("category_id") in self.categories
+                ]
+            else:
+                valid_objects = [
+                    (tuple(info["color"]), info)
+                    for info in color_map_raw
+                    if info.get("category_id") in self.categories
+                ]
+
+            total_objects = len(valid_objects)
+            visible_count = 0
+
+            if total_objects > 0:
+                for color_key, _info in valid_objects:
+                    r_tgt, g_tgt, b_tgt = color_key
+                    obj_visible = False
+                    for mask_path in all_mask_paths:
+                        if mask_path is None or not os.path.exists(mask_path):
+                            continue
+                        try:
+                            # Read at original resolution for accurate pixel count
+                            mask_img = np.array(Image.open(mask_path).convert("RGB"))
+                            pixel_match = (
+                                (mask_img[:, :, 0] == r_tgt) &
+                                (mask_img[:, :, 1] == g_tgt) &
+                                (mask_img[:, :, 2] == b_tgt)
+                            )
+                            if pixel_match.sum() >= self.coverage_min_pixels:
+                                obj_visible = True
+                                break  # object visible in at least one frame
+                        except Exception:
+                            pass
+                    if obj_visible:
+                        visible_count += 1
+
+            p_hidden = 1.0 - (visible_count / total_objects) if total_objects > 0 else 0.0
+            dataset_dict["coverage_gt"] = torch.tensor([p_hidden], dtype=torch.float32)
+            dataset_dict["total_objects_in_chunk"] = total_objects
+            dataset_dict["visible_objects_in_chunk"] = visible_count
+
+            # --- current camera pose (last frame in sampled chunk) ---
+            # poses list is already [num_sample_frames] tensors [4,4]
+            last_pose_mat = poses[-1].numpy()  # [4,4]
+            cam_position = last_pose_mat[:3, 3]  # [3]
+            cam_rotmat = last_pose_mat[:3, :3]   # [3,3]
+
+            # rotmat → quaternion [x,y,z,w]
+            def _rotmat_to_quat(R):
+                trace = np.trace(R)
+                if trace > 0:
+                    s = 0.5 / np.sqrt(trace + 1.0)
+                    w = 0.25 / s
+                    x = (R[2, 1] - R[1, 2]) * s
+                    y = (R[0, 2] - R[2, 0]) * s
+                    z = (R[1, 0] - R[0, 1]) * s
+                elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+                    s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+                    w = (R[2, 1] - R[1, 2]) / s
+                    x = 0.25 * s
+                    y = (R[0, 1] + R[1, 0]) / s
+                    z = (R[0, 2] + R[2, 0]) / s
+                elif R[1, 1] > R[2, 2]:
+                    s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+                    w = (R[0, 2] - R[2, 0]) / s
+                    x = (R[0, 1] + R[1, 0]) / s
+                    y = 0.25 * s
+                    z = (R[1, 2] + R[2, 1]) / s
+                else:
+                    s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+                    w = (R[1, 0] - R[0, 1]) / s
+                    x = (R[0, 2] + R[2, 0]) / s
+                    y = (R[1, 2] + R[2, 1]) / s
+                    z = 0.25 * s
+                q = np.array([x, y, z, w], dtype=np.float32)
+                q /= (np.linalg.norm(q) + 1e-8)
+                return q
+
+            cam_quat = _rotmat_to_quat(cam_rotmat)
+            dataset_dict["current_camera_position"] = torch.tensor(cam_position, dtype=torch.float32)
+            dataset_dict["current_camera_quaternion"] = torch.tensor(cam_quat, dtype=torch.float32)
+        # ── End NBV Active ───────────────────────────────────────────────────
+
         return dataset_dict
 
 # -------------------------------------------------------------------------
-# 3. Strawberry 3D Evaluator (PQ, SQ, RQ, mAP)
+# 3. NBV Active Modules — Coverage Head & NBV Head
+# -------------------------------------------------------------------------
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class CoverageHead(nn.Module):
+    """
+    Predicts p_hidden ∈ [0,1]: probability that some objects in the scene
+    are still undetected (not segmented with sufficient coverage).
+
+    Input:  query_feats [B, Q, D]  — output of ODIN transformer decoder
+    Output: pred_p_hidden [B, 1]
+
+    Architecture:
+        mean-pool over Q → [B, D]
+        Linear(D, hidden_dim) + ReLU
+        Linear(hidden_dim, 1) + Sigmoid
+    """
+
+    def __init__(self, in_dim: int = 256, hidden_dim: int = 128):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, query_feats: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            query_feats: [B, Q, D]
+        Returns:
+            pred_p_hidden: [B, 1]
+        """
+        scene_feat = query_feats.mean(dim=1)  # [B, D]
+        return self.mlp(scene_feat)           # [B, 1]
+
+    @staticmethod
+    def compute_loss(pred_p_hidden: torch.Tensor,
+                     coverage_gt: torch.Tensor,
+                     loss_weight: float = 1.0) -> torch.Tensor:
+        """
+        BCE loss between predicted p_hidden and GT coverage label.
+        Args:
+            pred_p_hidden: [B, 1]  — model output (already sigmoided)
+            coverage_gt:   [B, 1]  — GT from mapper (p_hidden = 1 - visible/total)
+            loss_weight:   scalar weight for this loss term
+        Returns:
+            scalar loss
+        """
+        loss = F.binary_cross_entropy(
+            pred_p_hidden,
+            coverage_gt.to(pred_p_hidden.device),
+            reduction="mean",
+        )
+        return loss * loss_weight
+
+
+class NBVHead(nn.Module):
+    """
+    Predicts next best camera pose: position (XYZ) + quaternion (xyzw).
+
+    Design rationale (see NBV_ACTIVE_ODIN_PLAN.md):
+    - Input uses ODIN decoder query features pooled over Q — they carry
+      full scene understanding via cross-attention over encoder feature maps.
+    - Adding raw encoder features would be redundant: decoder queries have
+      already attended to all spatial encoder positions.
+    - Current camera pose (last frame of chunk) gives spatial anchor.
+
+    Input:  query_feats [B, Q, D] + current_position [B,3] + current_quat [B,4]
+    Output: pred_position [B, 3], pred_quaternion [B, 4]
+
+    Architecture:
+        mean-pool(query_feats) → scene_feat [B, D]
+        cat([scene_feat, position, quaternion]) → [B, D+7]
+        Linear(D+7, hidden_dim) + LayerNorm + ReLU
+        Linear(hidden_dim, hidden_dim) + LayerNorm + ReLU
+        Linear(hidden_dim, 64) + ReLU
+        ├─ Linear(64, 3)          → pred_position
+        └─ Linear(64, 4) + L2norm → pred_quaternion
+    """
+
+    def __init__(self, scene_dim: int = 256, hidden_dim: int = 128):
+        super().__init__()
+        in_dim = scene_dim + 7  # scene_feat + position(3) + quaternion(4)
+        self.trunk = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 64),
+            nn.ReLU(inplace=True),
+        )
+        self.pos_head  = nn.Linear(64, 3)
+        self.quat_head = nn.Linear(64, 4)
+
+    def forward(
+        self,
+        query_feats: torch.Tensor,
+        current_position: torch.Tensor,
+        current_quaternion: torch.Tensor,
+    ):
+        """
+        Args:
+            query_feats:        [B, Q, D]
+            current_position:   [B, 3]
+            current_quaternion: [B, 4]
+        Returns:
+            pred_position:   [B, 3]   (XYZ in metres)
+            pred_quaternion: [B, 4]   (unit quaternion xyzw)
+        """
+        scene_feat = query_feats.mean(dim=1)  # [B, D]
+        x = torch.cat([scene_feat, current_position, current_quaternion], dim=-1)  # [B, D+7]
+        features = self.trunk(x)                                                   # [B, 64]
+
+        pred_pos  = self.pos_head(features)                                        # [B, 3]
+        pred_quat = self.quat_head(features)                                       # [B, 4]
+        pred_quat = pred_quat / (pred_quat.norm(dim=-1, keepdim=True) + 1e-8)     # unit quat
+
+        return pred_pos, pred_quat
+
+    @staticmethod
+    def compute_loss(
+        pred_position: torch.Tensor,
+        current_position: torch.Tensor,
+        pred_p_hidden: torch.Tensor,
+        target_step: float = 0.3,
+        explore_weight: float = 1.0,
+        reg_weight: float = 0.5,
+        loss_weight: float = 0.5,
+    ) -> dict:
+        """
+        Self-supervised surrogate loss (no GT required).
+
+        Components:
+          explore_loss: when p_hidden ≈ 1 (objects hidden), penalise small step.
+                        when p_hidden ≈ 0 (all visible), loss → 0 (no pressure).
+          reg_loss:     MSE between step_size and target_step to avoid step → 0 or ∞.
+
+        Args:
+            pred_position:    [B, 3]
+            current_position: [B, 3]
+            pred_p_hidden:    [B, 1]  — detached from coverage head
+            target_step:      desired step size in metres
+            explore_weight, reg_weight, loss_weight: scaling factors
+        Returns:
+            dict with 'loss_nbv', 'loss_nbv_explore', 'loss_nbv_reg' (all scalars)
+        """
+        step_size = (pred_position - current_position).norm(dim=-1)  # [B]
+        p_h = pred_p_hidden.detach().squeeze(-1)                      # [B]
+
+        # When p_hidden is high → large negative reward for small step
+        loss_explore = (p_h * (-step_size)).mean()
+
+        # Step-size regulariser: pull step toward target_step
+        loss_reg = F.mse_loss(step_size, torch.full_like(step_size, target_step))
+
+        total = (explore_weight * loss_explore + reg_weight * loss_reg) * loss_weight
+
+        return {
+            "loss_nbv":         total,
+            "loss_nbv_explore": loss_explore.detach(),
+            "loss_nbv_reg":     loss_reg.detach(),
+        }
+
+
+# -------------------------------------------------------------------------
+# 4. Strawberry 3D Evaluator (PQ, SQ, RQ, mAP)
 # -------------------------------------------------------------------------
 class Strawberry3DEvaluator(DatasetEvaluator):
     def __init__(self, dataset_name, output_dir, cfg):
@@ -1480,7 +1753,98 @@ class AMPTrainerWithClipping(AMPTrainer):
         storage.put_scalar("perf/sec_frame", sec_per_sample / self.num_frames)
         storage.put_scalar("perf/fps", 1.0 / sec_per_sample)
 
-class MyTrainer(DefaultTrainer):
+class NBVActiveODIN(nn.Module):
+    """
+    Wrapper for ODIN model that adds Coverage and Next Best View (NBV) heads.
+    Designed to use decoder query features from ODIN for scene understanding.
+    """
+    def __init__(self, base_model, cfg):
+        super().__init__()
+        self.model = base_model
+        self.cfg = cfg
+        
+        self.nbv_active = getattr(cfg.MODEL, "NBV_ACTIVE", False)
+        
+        if self.nbv_active:
+            hidden_dim_cov = getattr(cfg.MODEL.COVERAGE_HEAD, "HIDDEN_DIM", 128)
+            hidden_dim_nbv = getattr(cfg.MODEL.NBV_HEAD, "HIDDEN_DIM", 128)
+            
+            # Note: query features in ODIN are usually 256 dim
+            self.coverage_head = CoverageHead(in_dim=256, hidden_dim=hidden_dim_cov)
+            self.nbv_head = NBVHead(scene_dim=256, hidden_dim=hidden_dim_nbv)
+            
+            logger = logging.getLogger("odin_strawberry")
+            logger.info(f"NBV Active modules initialized: CoverageHead(dim={hidden_dim_cov}), NBVHead(dim={hidden_dim_nbv})")
+
+    @property
+    def device(self):
+        return self.model.device
+
+    def forward(self, batched_inputs):
+        # 1. Base ODIN forward pass
+        # Returns losses (training) or list of dicts (inference)
+        outputs = self.model(batched_inputs)
+        
+        if not self.nbv_active:
+            return outputs
+            
+        # Access the query features we stored in the base model
+        # Base model might be wrapped in DDP, so we check for .module
+        base_model = self.model.module if hasattr(self.model, "module") else self.model
+        last_outputs = getattr(base_model, "_last_outputs", None)
+        
+        if last_outputs is None or "query_features" not in last_outputs:
+            return outputs
+            
+        query_feats = last_outputs["query_features"] # [B, Q, D]
+        
+        if self.training:
+            # --- Coverage Loss ---
+            pred_p_hidden = self.coverage_head(query_feats) # [B, 1]
+            
+            # Extract GT from batched_inputs (added by mapper)
+            coverage_gt = torch.stack([x["coverage_gt"] for x in batched_inputs]).to(self.device)
+            
+            loss_cov = self.coverage_head.compute_loss(
+                pred_p_hidden, 
+                coverage_gt,
+                loss_weight=getattr(self.cfg.MODEL.COVERAGE_HEAD, "LOSS_WEIGHT", 1.0)
+            )
+            outputs["loss_coverage"] = loss_cov
+            
+            # --- NBV Loss (Self-Supervised) ---
+            # Current pose from last frame of chunk
+            curr_pos = torch.stack([x["current_camera_position"] for x in batched_inputs]).to(self.device)
+            curr_quat = torch.stack([x["current_camera_quaternion"] for x in batched_inputs]).to(self.device)
+            
+            pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
+            
+            nbv_loss_dict = self.nbv_head.compute_loss(
+                pred_pos, curr_pos, pred_p_hidden,
+                target_step=getattr(self.cfg.MODEL.NBV_HEAD, "TARGET_STEP_METERS", 0.3),
+                explore_weight=getattr(self.cfg.MODEL.NBV_HEAD, "EXPLORE_WEIGHT", 1.0),
+                reg_weight=getattr(self.cfg.MODEL.NBV_HEAD, "REG_WEIGHT", 0.5),
+                loss_weight=getattr(self.cfg.MODEL.NBV_HEAD, "LOSS_WEIGHT", 0.5)
+            )
+            outputs.update(nbv_loss_dict)
+        else:
+            # Inference mode: add predictions to the results
+            # outputs is a list of dicts (one per scene)
+            pred_p_hidden = self.coverage_head(query_feats)
+            curr_pos = torch.stack([x["current_camera_position"] for x in batched_inputs]).to(self.device)
+            curr_quat = torch.stack([x["current_camera_quaternion"] for x in batched_inputs]).to(self.device)
+            pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
+            
+            for i in range(len(outputs)):
+                outputs[i]["p_hidden"] = pred_p_hidden[i].item()
+                outputs[i]["nbv_pos"] = pred_pos[i].cpu().numpy()
+                outputs[i]["nbv_quat"] = pred_quat[i].cpu().numpy()
+                
+        return outputs
+
+# -------------------------------------------------------------------------
+# 5. MyTrainer (Detectron2 Trainer)
+# -------------------------------------------------------------------------
     def __init__(self, cfg):
         super(DefaultTrainer, self).__init__()
         logger = logging.getLogger("detectron2")
@@ -1489,6 +1853,12 @@ class MyTrainer(DefaultTrainer):
         cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
 
         model = self.build_model(cfg)
+
+        # NBV Active sensing modules
+        if getattr(cfg.MODEL, "NBV_ACTIVE", False):
+            logger = logging.getLogger("odin_strawberry")
+            logger.info("Wrapping model with NBVActiveODIN...")
+            model = NBVActiveODIN(model, cfg).to(model.device)
 
         # SWAG wrapper (if enabled) - only for predictor, not entire model
         self.swag_model = None

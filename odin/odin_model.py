@@ -1002,6 +1002,7 @@ class ODIN(nn.Module):
             num_classes=num_classes, 
             scene_names=scene_names
         )
+        self._last_outputs = outputs
         
         if self.training:
             # bipartite matching-based loss
