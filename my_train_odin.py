@@ -174,6 +174,8 @@ def get_nbv_stage2_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                 "frame_index": int(frame_key),
                 "intrinsics": cam_data["intrinsics"],
                 "position": cam_data["position"],
+                "target": cam_data.get("target"),
+                "up": cam_data.get("up"),
                 "rotation": cam_data["rotation"]
             })
 
@@ -238,6 +240,8 @@ def get_nbv_stage2_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     intrinsics.append(K)
 
                     R = quat_to_rotmat(*cam["rotation"])
+                    # Convert OpenGL (+Z backward) to ODIN (+Z forward)
+                    R[:, 2] = -R[:, 2]
                     t = np.array(cam["position"], dtype=np.float32)
 
                     pose = np.eye(4, dtype=np.float32)
@@ -372,6 +376,8 @@ def get_strawberry_dataset_dicts(dataset_dir: str, splits_file: str, split: str)
                     "masks_file_names": masks_file_names,
                     "intrinsics": intrinsics,
                     "poses": poses,
+                    "targets": [cam.get("target") for cam in chunk_cams],
+                    "ups": [cam.get("up") for cam in chunk_cams],
                     "length": len(file_names),
                     "color_map": color_to_info
                 }
@@ -500,15 +506,12 @@ class StrawberryDatasetMapper:
             
             # Depth
             depth = np.load(depth_file_names[idx])
-            depth = depth[::-1, :].copy() 
+            # Vertical flip only for Strawberry (Unity convention)
+            if self.dataset_type == "strawberry":
+                depth = depth[::-1, :].copy() 
             depth = cv2.resize(depth, (target_size, target_size), interpolation=cv2.INTER_NEAREST)
             
-            # Фильтр "мусора" (белые стены и черный пол)
-            rr, gg, bb = img[:,:,0], img[:,:,1], img[:,:,2]
-            is_white = (rr > 220) & (gg > 220) & (bb > 220)
-            is_black = (rr < 20) & (gg < 20) & (bb < 20)
-            depth[is_white | is_black] = 0
-
+            # depths.append(torch.as_tensor(depth, dtype=torch.float32)) # (Removed filtering)
             depths.append(torch.as_tensor(depth, dtype=torch.float32))
             
             # Intrinsics Scaling
@@ -575,6 +578,8 @@ class StrawberryDatasetMapper:
         dataset_dict["poses"] = poses
         dataset_dict["intrinsics"] = intrinsics
         dataset_dict["instances_all"] = instances_all
+        dataset_dict["targets"] = dataset_dict.get("targets", [None] * num_sample_frames)
+        dataset_dict["ups"] = dataset_dict.get("ups", [None] * num_sample_frames)
         dataset_dict["image"] = images[0] # primary image
         dataset_dict["instances"] = instances_all[0]
         dataset_dict["valids"] = [d > 0.001 for d in depths] 
@@ -895,6 +900,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         self._cpu_device = torch.device("cpu")
         self.multiplier = 1000 # Standard for instance encoding
         self._current_iter = 0  # Will be updated by hook before eval
+        self.dataset_type = "nbv_stage2" if "nbv" in dataset_name else "strawberry"
 
         # Инциализируем реальный эвалюатор из ODIN (с поддержкой strawberry и nbv)
         self.scannet_evaluator = Scannet_Evaluator(self._dataset_name)
@@ -1043,6 +1049,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                     "depths": [d.cpu() for d in _in.get("depths", [])],
                     "poses": [p.cpu() for p in _in.get("poses", [])],
                     "intrinsics": [i.cpu() for i in _in.get("intrinsics", [])],
+                    "targets": _in.get("targets", []),
+                    "ups": _in.get("ups", []),
                     "color_map": copy.deepcopy(_in.get("color_map", {})),
                     "instances_all": copy.deepcopy(_in.get("instances_all", [])) # 2D masks for visualization
                 }
@@ -1205,6 +1213,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 images = v_data.get("images", [])
                 depths = v_data.get("depths", [])
                 poses = v_data.get("poses", [])
+                targets = v_data.get("targets", [])
+                ups = v_data.get("ups", [])
                 intrinsics = v_data.get("intrinsics", [])
                 color_map = v_data.get("color_map", {})
                 
@@ -1247,13 +1257,18 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                                 cat_gt_frame[m_mask] = int(gt_c[inst_i])
 
                     # 2. Проекция
+                    # Проекция: теперь используем единый ODIN стандарт (Right-Up-Forward)
+                    # Координаты X_cam, Y_cam, Z_cam считаются одинаково для всех датасетов,
+                    # так как отличия в системах координат компенсируются при загрузке поз.
                     X_cam =  (uu - cx) * Z_s / fx
                     Y_cam = -(vv - cy) * Z_s / fy
                     Z_cam =   Z_s
+                        
                     pts_cam = np.stack([X_cam, Y_cam, Z_cam], axis=-1)
                     
                     R_mat = pose[:3, :3]
                     t_vec = pose[:3, 3]
+                        
                     pts_world = pts_cam @ R_mat.T + t_vec
                     
                     fv = valid.ravel()
@@ -1294,9 +1309,7 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 
                 if len(chunks) > 0:
                     pts = np.concatenate(chunks, axis=0)
-                    is_white = (pts[:, 3] > 220) & (pts[:, 4] > 220) & (pts[:, 5] > 220)
-                    is_black = (pts[:, 3] < 20) & (pts[:, 4] < 20) & (pts[:, 5] < 20)
-                    pts = pts[~is_white & ~is_black]
+                    # (Removed white/black filtering to keep all objects)
 
                     MAX_POINTS = 800000
                     if len(pts) > MAX_POINTS:
