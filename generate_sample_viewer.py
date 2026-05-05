@@ -269,7 +269,7 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
         cat = v["category_id"]
         col = SEG_PALETTE.get(cat, SEG_PALETTE[-1])
         instance_info[str(v["instance_id"])] = {
-            "ripeness":    v["ripeness"],
+            "ripeness":    v.get("ripeness", CATEGORY_NAMES.get(cat, "Unknown")),
             "category_id": cat,
             "hex": "#{:02x}{:02x}{:02x}".format(*col),
         }
