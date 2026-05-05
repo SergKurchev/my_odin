@@ -265,11 +265,30 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     # Support both dict and list formats for color_map
     color_map_items = color_map.items() if isinstance(color_map, dict) else enumerate(color_map)
 
+    dynamic_palette = {-1: SEG_PALETTE.get(-1, (80, 80, 80))}
+    dynamic_names = {-1: "Background"}
+
     for k, v in color_map_items:
         cat = v["category_id"]
-        col = SEG_PALETTE.get(cat, SEG_PALETTE[-1])
+        
+        if "category_name" in v:
+            name = str(v["category_name"])
+            if "texture_type" in v:
+                name += f'_{v["texture_type"]}'
+        else:
+            name = CATEGORY_NAMES.get(cat, f"Class {cat}")
+
+        if cat in SEG_PALETTE:
+            col = SEG_PALETTE[cat]
+        else:
+            h = (cat * 2654435761) % (2**32)
+            col = ((h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF)
+            
+        dynamic_palette[cat] = col
+        dynamic_names[cat] = name
+
         instance_info[str(v["instance_id"])] = {
-            "ripeness":    v.get("ripeness", CATEGORY_NAMES.get(cat, "Unknown")),
+            "ripeness":    v.get("ripeness", v.get("texture_type", name)),
             "category_id": cat,
             "hex": "#{:02x}{:02x}{:02x}".format(*col),
         }
@@ -277,8 +296,9 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     # Count per-category strawberry pixels in point cloud
     cat_counts = {}
     if N > 0:
-        for cat in [0, 1, 2]:
-            cat_counts[cat] = int(np.sum(pts[:, 7] == cat))
+        for cat in dynamic_names.keys():
+            if cat >= 0:
+                cat_counts[cat] = int(np.sum(pts[:, 7] == cat))
 
     # ── Encode point cloud as flat typed arrays ────────────────────────────
     has_pred = (pts.shape[1] >= 10)
@@ -324,7 +344,7 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     cam_pos_js = json.dumps([[c["position"][0], c["position"][1], c["position"][2]]
                               for c in cameras])
 
-    seg_palette_js = json.dumps({str(k): list(v) for k, v in SEG_PALETTE.items()})
+    seg_palette_js = json.dumps({str(k): list(v) for k, v in dynamic_palette.items()})
     instance_info_js = json.dumps(instance_info, indent=2)
 
     num_cameras    = len(cameras)
@@ -336,7 +356,14 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     stats_html = f"{N:,} points · {num_cameras} cameras"
     for cat, cnt in sorted(cat_counts.items()):
         if cnt:
-            stats_html += f" · {CATEGORY_NAMES[cat]}: {cnt:,}"
+            stats_html += f" · {dynamic_names[cat]}: {cnt:,}"
+
+    legend_html = '<div id="legend">\n'
+    for cat, name in dynamic_names.items():
+        if cat == -1: continue
+        col = dynamic_palette[cat]
+        legend_html += f'  <div class="leg-item"><div class="leg-dot" style="background:rgb({col[0]},{col[1]},{col[2]})"></div>{name}</div>\n'
+    legend_html += '</div>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -445,12 +472,7 @@ canvas{{width:100%!important;height:100%!important;display:block}}
   <button class="btn" onclick="toggleSidebar()">Frames ▾</button>
 </div>
 
-<div id="legend">
-  <div class="leg-item"><div class="leg-dot" style="background:rgb(232,68,68)"></div>Ripe</div>
-  <div class="leg-item"><div class="leg-dot" style="background:rgb(72,199,72)"></div>Unripe</div>
-  <div class="leg-item"><div class="leg-dot" style="background:rgb(240,160,40)"></div>Half-ripe</div>
-  <div class="leg-item"><div class="leg-dot" style="background:rgb(80,80,80)"></div>Background</div>
-</div>
+{legend_html}
 
 <div id="main">
   <div id="canvas-container">
