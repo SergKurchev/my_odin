@@ -71,7 +71,9 @@ def unproject_frame(depth: np.ndarray, rgb: np.ndarray, mask: np.ndarray,
                     color_to_info: dict,
                     stride: int = 1,
                     max_depth: float = 5.0,
-                    mode: str = "plant"):
+                    mode: str = "plant",
+                    flip_depth: bool = True,
+                    flip_rgb: bool = False):
     """
     Project one frame into world-space points.
 
@@ -91,7 +93,12 @@ def unproject_frame(depth: np.ndarray, rgb: np.ndarray, mask: np.ndarray,
     H, W = depth.shape
 
     # Fix 1: flip depth vertically (Unity ReadPixels bottom-up)
-    depth = depth[::-1, :]
+    if flip_depth:
+        depth = depth[::-1, :]
+    
+    if flip_rgb:
+        rgb = rgb[::-1, :, :]
+        mask = mask[::-1, :, :]
 
     u = np.arange(0, W, stride, dtype=np.float32)
     v = np.arange(0, H, stride, dtype=np.float32)
@@ -125,15 +132,7 @@ def unproject_frame(depth: np.ndarray, rgb: np.ndarray, mask: np.ndarray,
     if mode == "bush":
         # Only segmented strawberry pixels
         valid = valid & straw
-    elif mode == "plant":
-        # Exclude room background:
-        #   white walls: R,G,B all > 220
-        #   black floor: R,G,B all < 20
-        rr = rgb_s[:,:,0]; gg = rgb_s[:,:,1]; bb = rgb_s[:,:,2]
-        is_white = (rr > 220) & (gg > 220) & (bb > 220)
-        is_black = (rr <  20) & (gg <  20) & (bb <  20)
-        valid = valid & ~is_white & ~is_black
-    # mode == "all" → no extra filter
+    # No more 'plant' filtering to keep floor and manipulator
 
     fv   = valid.ravel()
     pts  = pts_world.reshape(-1, 3)[fv]
@@ -154,7 +153,9 @@ def unproject_frame(depth: np.ndarray, rgb: np.ndarray, mask: np.ndarray,
 
 def build_pointcloud(sample_path: Path, cameras: list, color_map,
                      stride: int, max_points: int,
-                     mode: str = "plant") -> np.ndarray:
+                     mode: str = "plant",
+                     flip_depth: bool = True,
+                     flip_rgb: bool = False) -> np.ndarray:
 
     # Support both dict format (Strawberry) and list format (NBV Stage2)
     if isinstance(color_map, dict):
@@ -165,7 +166,19 @@ def build_pointcloud(sample_path: Path, cameras: list, color_map,
         raise ValueError(f"Unsupported color_map format: {type(color_map)}")
 
     chunks = []
-    for cam in cameras:
+    # Support both list and dict formats for cameras
+    if isinstance(cameras, dict):
+        cam_list = []
+        for k, v in cameras.items():
+            cam_copy = v.copy()
+            if "frame_index" not in cam_copy:
+                cam_copy["frame_index"] = int(k)
+            cam_list.append(cam_copy)
+        cam_list.sort(key=lambda x: x["frame_index"])
+    else:
+        cam_list = cameras
+
+    for cam in cam_list:
         fi   = cam["frame_index"]
         name = f"{fi:05d}"
 
@@ -188,7 +201,8 @@ def build_pointcloud(sample_path: Path, cameras: list, color_map,
         t = np.array(cam["position"], dtype=np.float64)
 
         chunk = unproject_frame(depth, rgb, mask, fx, fy, cx, cy, R, t,
-                                color_to_info, stride=stride, mode=mode)
+                                color_to_info, stride=stride, mode=mode,
+                                flip_depth=flip_depth, flip_rgb=flip_rgb)
         chunks.append(chunk)
         print(f"  Frame {fi:2d}: {len(chunk):>8,} pts")
 
@@ -254,8 +268,20 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     print(f"  Building HTML for {N:,} points …")
 
     # ── Camera frustums ────────────────────────────────────────────────────
+    # Support both list and dict formats for cameras
+    if isinstance(cameras, dict):
+        cam_list = []
+        for k, v in cameras.items():
+            cam_copy = v.copy()
+            if "frame_index" not in cam_copy:
+                cam_copy["frame_index"] = int(k)
+            cam_list.append(cam_copy)
+        cam_list.sort(key=lambda x: x["frame_index"])
+    else:
+        cam_list = cameras
+
     all_frustum_lines = []
-    for cam in cameras:
+    for cam in cam_list:
         all_frustum_lines.append(frustum_lines(cam))
     frustum_arr = np.concatenate(all_frustum_lines, axis=0)  # (M, 6)
 
@@ -341,13 +367,25 @@ def build_html(pts: np.ndarray, cameras: list, color_map,
     js_frustum = compact_float_array(fl)
 
     # ── Camera positions for axes ──────────────────────────────────────────
+    # Support both list and dict formats for cameras
+    if isinstance(cameras, dict):
+        cam_list = []
+        for k, v in cameras.items():
+            cam_copy = v.copy()
+            if "frame_index" not in cam_copy:
+                cam_copy["frame_index"] = int(k)
+            cam_list.append(cam_copy)
+        cam_list.sort(key=lambda x: x["frame_index"])
+    else:
+        cam_list = cameras
+
     cam_pos_js = json.dumps([[c["position"][0], c["position"][1], c["position"][2]]
-                              for c in cameras])
+                              for c in cam_list])
 
     seg_palette_js = json.dumps({str(k): list(v) for k, v in dynamic_palette.items()})
     instance_info_js = json.dumps(instance_info, indent=2)
 
-    num_cameras    = len(cameras)
+    num_cameras    = len(cam_list)
     num_frustum_lines = len(frustum_arr)
     bg_color       = "0x0d1117"
 
@@ -493,7 +531,7 @@ canvas{{width:100%!important;height:100%!important;display:block}}
         f'<span class="frame-pos">'
         f'{c["position"][0]:+.2f} {c["position"][1]:+.2f} {c["position"][2]:+.2f}'
         f'</span></div>'
-        for c in cameras
+        for c in cam_list # use already prepared cam_list
     )}
   </div>
 </div>
@@ -730,6 +768,10 @@ def main():
                     choices=["all", "plant", "bush"],
                     help="Point filter: 'plant'=full bush excluding white/black bg (default), "
                          "'bush'=berries only from seg mask, 'all'=everything")
+    ap.add_argument("--flip-depth", action="store_true", default=True, help="Flip depth vertically (default: True)")
+    ap.add_argument("--no-flip-depth", action="store_false", dest="flip_depth", help="Don't flip depth vertically")
+    ap.add_argument("--flip-rgb", action="store_true", default=False, help="Flip RGB vertically (default: False)")
+    ap.add_argument("--output-name", default="visualization.html", help="Name of output HTML file (default: visualization.html)")
     args = ap.parse_args()
 
 
@@ -748,7 +790,8 @@ def main():
 
     pts = build_pointcloud(sample_path, cameras, color_map,
                            stride=args.stride, max_points=args.max_points,
-                           mode=args.mode)
+                           mode=args.mode,
+                           flip_depth=args.flip_depth, flip_rgb=args.flip_rgb)
 
 
     print(f"\n  Total points: {len(pts):,}")
@@ -756,7 +799,7 @@ def main():
 
     html = build_html(pts, cameras, color_map, sample_name)
 
-    out_path = sample_path / "visualization.html"
+    out_path = sample_path / args.output_name
     out_path.write_text(html, encoding="utf-8")
 
     size_mb = out_path.stat().st_size / 1e6

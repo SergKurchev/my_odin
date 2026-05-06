@@ -215,18 +215,39 @@ def plot_3d_strawberry(
     if gt_masks is not None:
         for m_idx in range(len(gt_masks)):
             mask = gt_masks[m_idx]
-            insts_gt[mask > 0.5] = m_idx
-            cats_gt[mask > 0.5] = gt_labels[m_idx]
+            # Ensure mask is 1D for comparison
+            m_flat = mask.flatten() if mask.ndim > 1 else mask
+            insts_gt[m_flat > 0.5] = m_idx
+            cats_gt[m_flat > 0.5] = gt_labels[m_idx]
 
     insts_pred = np.full(pc.shape[0], -1, dtype=np.int32)
     cats_pred = np.full(pc.shape[0], -1, dtype=np.int32)
     if masks is not None:
         for m_idx in range(len(masks)):
             mask = masks[m_idx]
-            insts_pred[mask > 0.5] = m_idx
-            cats_pred[mask > 0.5] = labels[m_idx]
+            # Ensure mask is 1D for comparison
+            m_flat = mask.flatten() if mask.ndim > 1 else mask
+            insts_pred[m_flat > 0.5] = m_idx
+            cats_pred[m_flat > 0.5] = labels[m_idx]
 
-    # Используем json.dumps для быстрой и безопасной сериализации
+    # 2.1 Build a dynamic palette for all present categories
+    unique_cats = np.unique(np.concatenate([cats_gt, cats_pred]))
+    palette = {
+        0: [255, 0, 0],    # Ripe (Red)
+        1: [0, 255, 0],    # Unripe (Green)
+        2: [255, 165, 0],  # Half-ripe (Orange)
+        -1: [60, 60, 60],  # Background (Gray)
+    }
+    
+    # Add random colors for any other classes (e.g. NBV Stage 2 classes 3-23)
+    for c in unique_cats:
+        c = int(c)
+        if c not in palette and c != -1:
+            # Simple pseudo-random color based on class ID
+            h = (c * 2654435761) % (2**32)
+            palette[c] = [(h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF]
+
+    # 3. Prepare Data for JSON
     js_data = {
         "xs": pc[:, 0].astype(np.float32).tolist(),
         "ys": pc[:, 1].astype(np.float32).tolist(),
@@ -238,6 +259,7 @@ def plot_3d_strawberry(
         "cat_gt": cats_gt.tolist(),
         "inst_p": insts_pred.tolist(),
         "cat_p": cats_pred.tolist(),
+        "palette": {str(k): v for k, v in palette.items()} # Keys must be strings for JSON
     }
 
     html_template = """<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -258,7 +280,6 @@ def plot_3d_strawberry(
     <script>
     const D = """ + json.dumps(js_data) + """;
     const N = D.xs.length;
-    const PAL = {'0':[255,0,0],'1':[0,255,0],'2':[255,165,0],'-1':[60,60,60]};
     const scene=new THREE.Scene(); 
     const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.01,100);
     const renderer=new THREE.WebGLRenderer(); renderer.setSize(window.innerWidth,window.innerHeight);
@@ -280,7 +301,7 @@ def plot_3d_strawberry(
                 if(id===-1){ r=g=bl=0.2; } else { let h=(id*2654435761)>>>0; r=((h>>>16)&255)/255; g=((h>>>8)&255)/255; bl=(h&255)/255; }
             } else {
                 let c = (m==='gt_c')?D.cat_gt[i]:D.cat_p[i];
-                let rgb = PAL[c]||PAL['-1']; r=rgb[0]/255; g=rgb[1]/255; bl=rgb[2]/255;
+                let rgb = D.palette[String(c)]||D.palette['-1']; r=rgb[0]/255; g=rgb[1]/255; bl=rgb[2]/255;
             }
             col[i*3]=r; col[i*3+1]=g; col[i*3+2]=bl;
         }

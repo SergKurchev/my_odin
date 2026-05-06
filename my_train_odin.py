@@ -1195,8 +1195,12 @@ class Strawberry3DEvaluator(DatasetEvaluator):
                 point_pred_cat = None
                 
                 if pred_masks is not None and len(pred_masks) > 0:
-                    num_pred_instances = pred_masks.shape[0]
-                    num_pts_total = pred_masks.shape[1]
+                    # ODIN 3D часто возвращает маски как [Points, Instances], тогда как мы ожидаем [Instances, Points]
+                    if pred_masks.shape[0] > pred_masks.shape[1] and pred_masks.ndim == 2:
+                        pred_masks = pred_masks.T
+                        
+                    num_pred_instances, num_pts_total = pred_masks.shape
+                    
                     # Создаем карту меток для всех точек сразу (фон = -1)
                     point_pred_inst = np.full(num_pts_total, -1, dtype=np.int32)
                     point_pred_cat = np.full(num_pts_total, -1, dtype=np.int32)
