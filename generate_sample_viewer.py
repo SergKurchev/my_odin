@@ -531,7 +531,7 @@ canvas{{width:100%!important;height:100%!important;display:block}}
         f'<span class="frame-pos">'
         f'{c["position"][0]:+.2f} {c["position"][1]:+.2f} {c["position"][2]:+.2f}'
         f'</span></div>'
-        for c in cam_list # use already prepared cam_list
+        for c in cam_list
     )}
   </div>
 </div>
