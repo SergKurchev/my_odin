@@ -1308,7 +1308,11 @@ class ODIN(nn.Module):
         mask_scores_per_image = (pred_masks.sigmoid().flatten(1) * masks.flatten(1)).sum(1) / (masks.flatten(1).sum(1) + 1e-6)
 
         # Check if this is strawberry dataset (uses 0-indexed labels)
-        is_strawberry = batched_inputs is not None and 'strawberry' in batched_inputs.get('dataset_name', '')
+        # batched_inputs is usually a single dict here passed from eval_normal loop
+        if isinstance(batched_inputs, list):
+            is_strawberry = len(batched_inputs) > 0 and 'strawberry' in batched_inputs[0].get('dataset_name', '')
+        else:
+            is_strawberry = batched_inputs is not None and 'strawberry' in batched_inputs.get('dataset_name', '')
 
         # add +1 to labels as mask3d evals from 1-18 (ScanNet convention)
         # BUT: strawberry dataset uses 0-indexed labels, so skip +1

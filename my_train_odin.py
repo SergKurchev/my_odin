@@ -1339,9 +1339,17 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         preds_dict = {}
         for idx, pred_data in self.processed_preds.items():
             preds_dict[idx] = pred_data.copy()
-            # Add +1 to pred_classes for evaluator (expects 1-indexed)
+            # CRITICAL: The model already adds +1 for non-strawberry datasets in prepare_3d/inference_scannet_ghost.
+            # We should only add +1 if we detect it's still 0-indexed.
             if 'pred_classes' in preds_dict[idx]:
-                preds_dict[idx]['pred_classes'] = preds_dict[idx]['pred_classes'] + 1
+                pred_classes = preds_dict[idx]['pred_classes']
+                # If max class is < num_classes, it's likely 0-indexed
+                num_classes_fore = len(self.scannet_evaluator.CLASS_LABELS)
+                if pred_classes.max() < num_classes_fore and pred_classes.min() >= 0:
+                    logger.info(f"[DEBUG] Detected 0-indexed preds for sample {idx}, adding +1")
+                    preds_dict[idx]['pred_classes'] = pred_classes + 1
+                else:
+                    logger.info(f"[DEBUG] Detected 1-indexed preds for sample {idx}, skipping +1")
 
         gts_dict = self.processed_gts
 
