@@ -1336,6 +1336,8 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # Однако, для точности в CSV запишем константы из последнего замера если доступно.
         # CRITICAL FIX: Evaluator expects 1-indexed classes [1, 2, 3] but model returns 0-indexed [0, 1, 2]
         # We need to convert pred_classes to 1-indexed for metrics, but keep original for visualization
+        logger = logging.getLogger(__name__)
+
         preds_dict = {}
         for idx, pred_data in self.processed_preds.items():
             preds_dict[idx] = pred_data.copy()
@@ -1356,7 +1358,6 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         # ========================================================================
         # CRITICAL INDEXING VERIFICATION (from INDEX_ANALYSIS.md)
         # ========================================================================
-        logger = logging.getLogger(__name__)
         print("=" * 80)
         print("[INDEX CHECK] Starting comprehensive indexing verification")
         print(f"[INDEX CHECK] preds_dict type: {type(preds_dict)}, len: {len(preds_dict)}")
