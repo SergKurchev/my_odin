@@ -1341,17 +1341,19 @@ class Strawberry3DEvaluator(DatasetEvaluator):
         preds_dict = {}
         for idx, pred_data in self.processed_preds.items():
             preds_dict[idx] = pred_data.copy()
-            # CRITICAL: The model already adds +1 for non-strawberry datasets in prepare_3d/inference_scannet_ghost.
-            # We should only add +1 if we detect it's still 0-indexed.
             if 'pred_classes' in preds_dict[idx]:
                 pred_classes = preds_dict[idx]['pred_classes']
-                # If max class is < num_classes, it's likely 0-indexed
-                num_classes_fore = len(self.scannet_evaluator.CLASS_LABELS)
-                if pred_classes.max() < num_classes_fore and pred_classes.min() >= 0:
-                    logger.info(f"[DEBUG] Detected 0-indexed preds for sample {idx}, adding +1")
+                # Model logic in odin_model.py:
+                # - If 'strawberry' in dataset_name: returns 0-indexed (0, 1, 2)
+                # - Otherwise: returns 1-indexed (1, 2, ..., 24)
+                # Evaluator ALWAYS expects 1-indexed for ScanNet compatibility.
+                
+                if self.dataset_type == "strawberry":
+                    # Model skipped +1, so we add it
                     preds_dict[idx]['pred_classes'] = pred_classes + 1
                 else:
-                    logger.info(f"[DEBUG] Detected 1-indexed preds for sample {idx}, skipping +1")
+                    # Model already added +1 for NBV/others, so we stay as is
+                    pass
 
         gts_dict = self.processed_gts
 
