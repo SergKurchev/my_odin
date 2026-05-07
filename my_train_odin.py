@@ -2469,9 +2469,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
     parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")
 
-    parser.add_argument("--nan_lr_scale", type=float, default=0.1, help="LR scale factor when NaN detected (default: 0.1 = reduce by 10x)")
-    parser.add_argument("--nan_recovery_iters", type=int, default=100, help="Iterations to recover LR back to original (default: 100)")
-
     args = parser.parse_args()
     
     os.environ['TORCH_CUDNN_V8_API_DISABLED'] = '1'
