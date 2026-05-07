@@ -2418,17 +2418,17 @@ def setup(args):
         cfg.VISUALIZE_LOG_DIR = os.path.join(cfg.OUTPUT_DIR, "inference", "visualizations")
         os.makedirs(cfg.VISUALIZE_LOG_DIR, exist_ok=True)
 
+    # NaN recovery parameters (CRITICAL for stability)
+    cfg.NAN_RECOVERY_ENABLED = getattr(args, "nan_recovery", True)
+    cfg.NAN_LR_SCALE = getattr(args, "nan_lr_scale", 0.1)
+    cfg.NAN_RECOVERY_ITERS = getattr(args, "nan_recovery_iters", 100)
+
     # Gradient Clipping для стабильности (защита от NaN)
     cfg.SOLVER.CLIP_GRADIENTS.ENABLED = True
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE = "norm"
     cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 0.1 # Жесткая обрезка для стабильности
 
     cfg.MAX_TIME_HOURS = getattr(args, "max_time", 11.5)
-
-    # NaN recovery parameters
-    cfg.NAN_RECOVERY_ENABLED = getattr(args, "nan_recovery", False)
-    cfg.NAN_LR_SCALE = getattr(args, "nan_lr_scale", 0.1)
-    cfg.NAN_RECOVERY_ITERS = getattr(args, "nan_recovery_iters", 100)
 
     cfg.freeze()
     default_setup(cfg, args)
@@ -2461,13 +2461,14 @@ if __name__ == "__main__":
     parser.add_argument("--num_frames", type=int, default=3, help="Frames per sample")
     parser.add_argument("--image_size", type=int, default=224, help="Input frame resolution")
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
-    parser.add_argument("--warmup_ratio", type=float, default=None, help="Warmup ratio (0.0-1.0) of total iterations. 0.0 = no warmup, 0.1 = 10%% warmup. If not set, uses default warmup iters.")
+    parser.add_argument("--warmup_ratio", type=float, default=None, help="Ratio of max_iter for LR warmup")
+    parser.add_argument("--nan_recovery", action="store_true", default=True, help="Enable automatic recovery from NaN losses")
+    parser.add_argument("--nan_lr_scale", type=float, default=0.1, help="LR scale factor during NaN recovery")
+    parser.add_argument("--nan_recovery_iters", type=int, default=100, help="Number of iters to recover LR after NaN")
     parser.add_argument("--visualize", action="store_true", help="Enable 3D visualization dump")
     parser.add_argument("--max_time", type=float, default=11.5, help="Max time in hours")
     parser.add_argument("--bayesian_samples", type=int, default=1, help="Number of MC samples for Bayesian inference")
 
-    # NaN recovery parameters
-    parser.add_argument("--nan_recovery", action="store_true", help="Enable automatic NaN recovery (reduce LR and gradually restore)")
     parser.add_argument("--nan_lr_scale", type=float, default=0.1, help="LR scale factor when NaN detected (default: 0.1 = reduce by 10x)")
     parser.add_argument("--nan_recovery_iters", type=int, default=100, help="Iterations to recover LR back to original (default: 100)")
 
