@@ -745,7 +745,7 @@ class CoverageHead(nn.Module):
             nn.Linear(in_dim, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
+            # nn.Sigmoid(),  <-- Removed for AMP stability (using binary_cross_entropy_with_logits instead)
         )
 
     def forward(self, query_feats: torch.Tensor) -> torch.Tensor:
@@ -753,27 +753,28 @@ class CoverageHead(nn.Module):
         Args:
             query_feats: [B, Q, D]
         Returns:
-            pred_p_hidden: [B, 1]
+            pred_logits: [B, 1]  — Raw logits (not probabilities!)
         """
         scene_feat = query_feats.mean(dim=1)  # [B, D]
         return self.mlp(scene_feat)           # [B, 1]
 
     @staticmethod
-    def compute_loss(pred_p_hidden: torch.Tensor,
+    def compute_loss(pred_logits: torch.Tensor,
                      coverage_gt: torch.Tensor,
                      loss_weight: float = 1.0) -> torch.Tensor:
         """
-        BCE loss between predicted p_hidden and GT coverage label.
+        BCE loss with logits between predicted logits and GT coverage label.
+        Safe for torch.cuda.amp.autocast.
         Args:
-            pred_p_hidden: [B, 1]  — model output (already sigmoided)
-            coverage_gt:   [B, 1]  — GT from mapper (p_hidden = 1 - visible/total)
-            loss_weight:   scalar weight for this loss term
+            pred_logits: [B, 1]  — model output (raw logits)
+            coverage_gt: [B, 1]  — GT from mapper
+            loss_weight: scalar weight for this loss term
         Returns:
             scalar loss
         """
-        loss = F.binary_cross_entropy(
-            pred_p_hidden,
-            coverage_gt.to(pred_p_hidden.device),
+        loss = F.binary_cross_entropy_with_logits(
+            pred_logits,
+            coverage_gt.to(pred_logits.device).to(pred_logits.dtype),
             reduction="mean",
         )
         return loss * loss_weight
@@ -1828,13 +1829,13 @@ class NBVActiveODIN(nn.Module):
         
         if self.training:
             # --- Coverage Loss ---
-            pred_p_hidden = self.coverage_head(query_feats) # [B, 1]
+            pred_logits = self.coverage_head(query_feats) # [B, 1]
             
             # Extract GT from batched_inputs (added by mapper)
             coverage_gt = torch.stack([x["coverage_gt"] for x in batched_inputs]).to(self.device)
             
             loss_cov = self.coverage_head.compute_loss(
-                pred_p_hidden, 
+                pred_logits, 
                 coverage_gt,
                 loss_weight=getattr(self.cfg.MODEL.COVERAGE_HEAD, "LOSS_WEIGHT", 1.0)
             )
@@ -1847,6 +1848,9 @@ class NBVActiveODIN(nn.Module):
             
             pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
             
+            # NBV head loss needs probabilities, so we apply sigmoid here
+            pred_p_hidden = pred_logits.sigmoid()
+            
             nbv_loss_dict = self.nbv_head.compute_loss(
                 pred_pos, curr_pos, pred_p_hidden,
                 target_step=getattr(self.cfg.MODEL.NBV_HEAD, "TARGET_STEP_METERS", 0.3),
@@ -1858,7 +1862,9 @@ class NBVActiveODIN(nn.Module):
         else:
             # Inference mode: add predictions to the results
             # outputs is a list of dicts (one per scene)
-            pred_p_hidden = self.coverage_head(query_feats)
+            pred_logits = self.coverage_head(query_feats)
+            pred_p_hidden = pred_logits.sigmoid()
+            
             curr_pos = torch.stack([x["current_camera_position"] for x in batched_inputs]).to(self.device)
             curr_quat = torch.stack([x["current_camera_quaternion"] for x in batched_inputs]).to(self.device)
             pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
