@@ -1827,6 +1827,18 @@ class NBVActiveODIN(nn.Module):
             
         query_feats = last_outputs["query_features"] # [B, Q, D]
         
+        rl_mode = any(x.get("rl_mode", False) for x in batched_inputs)
+        if rl_mode:
+            pred_logits = self.coverage_head(query_feats) # [B, 1]
+            curr_pos = torch.stack([x["current_camera_position"] for x in batched_inputs]).to(self.device)
+            curr_quat = torch.stack([x["current_camera_quaternion"] for x in batched_inputs]).to(self.device)
+            pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
+            return {
+                "p_hidden": pred_logits,
+                "nbv_pos": pred_pos,
+                "nbv_quat": pred_quat,
+            }
+        
         if self.training:
             # --- Coverage Loss ---
             pred_logits = self.coverage_head(query_feats) # [B, 1]
