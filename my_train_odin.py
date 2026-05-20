@@ -734,12 +734,12 @@ class CoverageHead(nn.Module):
     Output: pred_p_hidden [B, 1]
 
     Architecture:
-        mean-pool over Q → [B, D]
-        Linear(D, hidden_dim) + ReLU
-        Linear(hidden_dim, 1) + Sigmoid
+        flatten(Q, D) → [B, Q*D]          # preserves all per-query information
+        Linear(Q*D, hidden_dim) + ReLU
+        Linear(hidden_dim, 1)
     """
 
-    def __init__(self, in_dim: int = 256, hidden_dim: int = 128):
+    def __init__(self, in_dim: int = 5120, hidden_dim: int = 128):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
@@ -755,8 +755,8 @@ class CoverageHead(nn.Module):
         Returns:
             pred_logits: [B, 1]  — Raw logits (not probabilities!)
         """
-        scene_feat = query_feats.mean(dim=1)  # [B, D]
-        return self.mlp(scene_feat)           # [B, 1]
+        x = query_feats.flatten(1)  # [B, Q*D]
+        return self.mlp(x)          # [B, 1]
 
     @staticmethod
     def compute_loss(pred_logits: torch.Tensor,
@@ -785,28 +785,27 @@ class NBVHead(nn.Module):
     Predicts next best camera pose: position (XYZ) + quaternion (xyzw).
 
     Design rationale (see NBV_ACTIVE_ODIN_PLAN.md):
-    - Input uses ODIN decoder query features pooled over Q — they carry
-      full scene understanding via cross-attention over encoder feature maps.
-    - Adding raw encoder features would be redundant: decoder queries have
-      already attended to all spatial encoder positions.
+    - Input uses ODIN decoder query features flattened over Q — they carry
+      full per-query scene understanding via cross-attention over encoder features.
+    - Flattening (vs mean-pool) preserves individual query slot information.
     - Current camera pose (last frame of chunk) gives spatial anchor.
 
     Input:  query_feats [B, Q, D] + current_position [B,3] + current_quat [B,4]
     Output: pred_position [B, 3], pred_quaternion [B, 4]
 
     Architecture:
-        mean-pool(query_feats) → scene_feat [B, D]
-        cat([scene_feat, position, quaternion]) → [B, D+7]
-        Linear(D+7, hidden_dim) + LayerNorm + ReLU
+        flatten(Q, D) → [B, Q*D]           # preserves all per-query information
+        cat([flat_feats, position, quat]) → [B, Q*D+7]
+        Linear(Q*D+7, hidden_dim) + LayerNorm + ReLU
         Linear(hidden_dim, hidden_dim) + LayerNorm + ReLU
         Linear(hidden_dim, 64) + ReLU
         ├─ Linear(64, 3)          → pred_position
         └─ Linear(64, 4) + L2norm → pred_quaternion
     """
 
-    def __init__(self, scene_dim: int = 256, hidden_dim: int = 128):
+    def __init__(self, scene_dim: int = 5120, hidden_dim: int = 128):
         super().__init__()
-        in_dim = scene_dim + 7  # scene_feat + position(3) + quaternion(4)
+        in_dim = scene_dim + 7  # flat query feats + position(3) + quaternion(4)
         self.trunk = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -835,9 +834,9 @@ class NBVHead(nn.Module):
             pred_position:   [B, 3]   (XYZ in metres)
             pred_quaternion: [B, 4]   (unit quaternion xyzw)
         """
-        scene_feat = query_feats.mean(dim=1)  # [B, D]
-        x = torch.cat([scene_feat, current_position, current_quaternion], dim=-1)  # [B, D+7]
-        features = self.trunk(x)                                                   # [B, 64]
+        flat_feats = query_feats.flatten(1)                                                     # [B, Q*D]
+        x = torch.cat([flat_feats, current_position, current_quaternion], dim=-1)  # [B, Q*D+7]
+        features = self.trunk(x)                                                    # [B, 64]
 
         pred_pos  = self.pos_head(features)                                        # [B, 3]
         pred_quat = self.quat_head(features)                                       # [B, 4]
@@ -1798,12 +1797,19 @@ class NBVActiveODIN(nn.Module):
             hidden_dim_cov = getattr(cfg.MODEL.COVERAGE_HEAD, "HIDDEN_DIM", 128)
             hidden_dim_nbv = getattr(cfg.MODEL.NBV_HEAD, "HIDDEN_DIM", 128)
             
-            # Note: query features in ODIN are usually 256 dim
-            self.coverage_head = CoverageHead(in_dim=256, hidden_dim=hidden_dim_cov)
-            self.nbv_head = NBVHead(scene_dim=256, hidden_dim=hidden_dim_nbv)
-            
+            # Flatten all Q query slots to preserve per-slot information.
+            # Q = NUM_OBJECT_QUERIES (20 for scannet_context), feat_dim = 256.
+            num_queries = cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES
+            feat_dim = 256
+            flat_dim = num_queries * feat_dim  # 5120 for scannet_context
+            self.coverage_head = CoverageHead(in_dim=flat_dim, hidden_dim=hidden_dim_cov)
+            self.nbv_head = NBVHead(scene_dim=flat_dim, hidden_dim=hidden_dim_nbv)
+
             logger = logging.getLogger("odin_strawberry")
-            logger.info(f"NBV Active modules initialized: CoverageHead(dim={hidden_dim_cov}), NBVHead(dim={hidden_dim_nbv})")
+            logger.info(
+                f"NBV Active modules initialized: CoverageHead(in={flat_dim}, hidden={hidden_dim_cov}), "
+                f"NBVHead(in={flat_dim + 7}, hidden={hidden_dim_nbv}) — using flatten over {num_queries} queries"
+            )
 
     @property
     def device(self):
@@ -1833,11 +1839,14 @@ class NBVActiveODIN(nn.Module):
             curr_pos = torch.stack([x["current_camera_position"] for x in batched_inputs]).to(self.device)
             curr_quat = torch.stack([x["current_camera_quaternion"] for x in batched_inputs]).to(self.device)
             pred_pos, pred_quat = self.nbv_head(query_feats, curr_pos, curr_quat)
-            return {
+            res_dict = {
                 "p_hidden": pred_logits,
                 "nbv_pos": pred_pos,
                 "nbv_quat": pred_quat,
             }
+            if isinstance(outputs, (list, tuple)) and len(outputs) > 0 and isinstance(outputs[0], dict):
+                res_dict["instances_3d"] = outputs[0].get("instances_3d", None)
+            return res_dict
         
         if self.training:
             # --- Coverage Loss ---
