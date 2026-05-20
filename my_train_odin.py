@@ -669,7 +669,8 @@ class StrawberryDatasetMapper:
                     if obj_visible:
                         visible_count += 1
 
-            p_hidden = 1.0 - (visible_count / total_objects) if total_objects > 0 else 0.0
+            # Binary: 1 if any objects are hidden, 0 if all visible
+            p_hidden = 1.0 if (total_objects > 0 and visible_count < total_objects) else 0.0
             dataset_dict["coverage_gt"] = torch.tensor([p_hidden], dtype=torch.float32)
             dataset_dict["total_objects_in_chunk"] = total_objects
             dataset_dict["visible_objects_in_chunk"] = visible_count
